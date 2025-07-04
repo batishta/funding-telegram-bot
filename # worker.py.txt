@@ -1,0 +1,32 @@
+# worker.py
+import time
+import logging
+from multiprocessing import Queue
+# --- ЗМІНА ТУТ ---
+from src.services.funding_service import get_all_funding_data_sequential
+# ------------------
+
+logging.basicConfig(
+    format="%(asctime)s - WORKER - %(levelname)s - %(message)s", level=logging.INFO
+)
+
+def worker_process(task_queue: Queue, result_queue: Queue):
+    logging.info("Воркер запущений і готовий до роботи.")
+    while True:
+        try:
+            task = task_queue.get()
+            
+            if task is None:
+                logging.info("Отримано сигнал завершення. Воркер зупиняється.")
+                break
+
+            job_id, exchanges = task
+            logging.info(f"Отримано завдання #{job_id} для бірж: {exchanges}")
+            
+            result_df = get_all_funding_data_sequential(exchanges)
+            
+            result_queue.put((job_id, result_df))
+            logging.info(f"Завдання #{job_id} виконано, результат відправлено.")
+
+        except Exception as e:
+            logging.error(f"Критична помилка у воркері: {e}", exc_info=True)
