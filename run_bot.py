@@ -1,4 +1,4 @@
-# run_bot.py (Версія з повним меню та виправленнями)
+# run_bot.py (Версія з виправленням NameError та новими кнопками /start)
 
 import os
 import logging
@@ -30,15 +30,14 @@ EXCHANGE_URL_TEMPLATES = {
     'BingX': 'https://swap.bingx.com/en-us/{symbol}-USDT', 'CoinEx': 'https://www.coinex.com/futures/{symbol}-usdt-swap', 'Bitmart': 'https://futures.bitmart.com/en-US/trade/{symbol}'
 }
 DEFAULT_SETTINGS = {
-    "enabled": True, "threshold": 0.3, "update_interval": 60, # в хвилинах
+    "enabled": True, "threshold": 0.3, "update_interval": 60,
     "exchanges": ['Binance', 'ByBit', 'OKX', 'Bitget', 'KuCoin', 'MEXC', 'Gate.io']
 }
 TOP_N = 10
 (SET_THRESHOLD_STATE, SET_INTERVAL_STATE) = range(2)
 
-# --- СЕРВІСНІ ФУНКЦІЇ (без змін) ---
+# --- СЕРВІСНІ ФУНКЦІЇ ---
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
-    # ... (код get_all_funding_data_sequential залишається таким же)
     all_rates = []
     for name in enabled_exchanges:
         exchange_id = AVAILABLE_EXCHANGES.get(name)
@@ -69,7 +68,6 @@ def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     return pd.DataFrame(all_rates).drop_duplicates(subset=['symbol', 'exchange'], keep='first')
 
 def get_funding_for_ticker_sequential(ticker: str, enabled_exchanges: list) -> pd.DataFrame:
-    # ... (код get_funding_for_ticker_sequential залишається таким же)
     ticker_clean = ticker.upper().replace("USDT", "").replace("/", "")
     full_data = get_all_funding_data_sequential(enabled_exchanges)
     if full_data.empty: return pd.DataFrame()
@@ -83,6 +81,11 @@ def get_user_settings(chat_id: int) -> dict:
 def update_user_setting(chat_id: int, key: str, value): get_user_settings(chat_id)[key] = value
 
 # --- КЛАВІАТУРИ ---
+def get_start_menu_keyboard(): # НОВА КЛАВІАТУРА
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💎 Тільки Фандінг", callback_data="show_funding_only")],
+        [InlineKeyboardButton("📊 Фандінг + Спред (в розробці)", callback_data="show_funding_spread_soon")]
+    ])
 def get_main_menu_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Оновити", callback_data="refresh"), InlineKeyboardButton("⚙️ Налаштування", callback_data="settings_menu")]])
 def get_settings_menu_keyboard(settings: dict):
     bot_status_text = "🟢 Бот ON" if settings.get('enabled', True) else "🔴 Бот OFF"
@@ -96,7 +99,6 @@ def get_settings_menu_keyboard(settings: dict):
         [InlineKeyboardButton("❌ Закрити", callback_data="close_settings")]
     ])
 def get_exchange_selection_keyboard(selected_exchanges: list):
-    # ... (без змін)
     buttons = []; row = []
     for name in AVAILABLE_EXCHANGES.keys():
         text = f"✅ {name}" if name in selected_exchanges else f"☑️ {name}"
@@ -109,7 +111,7 @@ def get_interval_selection_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("5 хв", callback_data="set_interval_5"), InlineKeyboardButton("15 хв", callback_data="set_interval_15"), InlineKeyboardButton("30 хв", callback_data="set_interval_30")],
         [InlineKeyboardButton("1 год", callback_data="set_interval_60"), InlineKeyboardButton("4 год", callback_data="set_interval_240"), InlineKeyboardButton("8 год", callback_data="set_interval_480")],
-        [InlineKeyboardButton("↩️ Назад", callback_data="settings_menu"), InlineKeyboardButton("❌ Закрити", callback_data="close_settings")]
+        [InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")]
     ])
 def get_back_and_close_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Назад", callback_data="settings_menu"), InlineKeyboardButton("❌ Закрити", callback_data="close_settings")]])
@@ -117,12 +119,10 @@ def get_ticker_menu_keyboard(ticker: str): return InlineKeyboardMarkup([[InlineK
 
 # --- ФОРМАТУВАЛЬНИКИ ---
 def get_trade_link(exchange: str, symbol: str) -> str:
-    # ... (без змін)
     template = EXCHANGE_URL_TEMPLATES.get(exchange)
     if not template: return ""
     return template.format(symbol=f"{symbol}USDT", symbol_hyphen=f"{symbol}-USDT")
 def format_funding_update(df: pd.DataFrame, threshold: float) -> str:
-    # ... (без змін)
     if df.empty: return "Не знайдено даних по фандінгу."
     df['abs_rate'] = df['rate'].abs()
     filtered_df = df[df['abs_rate'] >= threshold].sort_values('abs_rate', ascending=False).head(TOP_N)
@@ -131,7 +131,6 @@ def format_funding_update(df: pd.DataFrame, threshold: float) -> str:
     lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        # РЕАЛІЗОВАНО: копіювання тикеру при натисканні на нього
         symbol_str = f"<code>/copy {row['symbol']}</code>"
         rate_str = f"<b>{row['rate']: >-7.4f}%</b>"
         time_str = row['next_funding_time'].strftime('%H:%M UTC') if pd.notna(row['next_funding_time']) else "##:## UTC"
@@ -139,9 +138,7 @@ def format_funding_update(df: pd.DataFrame, threshold: float) -> str:
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>' if link else row["exchange"]
         lines.append(f"{emoji} {symbol_str} | {rate_str} | {time_str} | {exchange_str}")
     return header + "\n".join(lines) + "\n\n<i>Натисніть на тикер, щоб скопіювати його.</i>"
-
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
-    # ... (без змін)
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>\n\n"
     lines = []
@@ -155,44 +152,72 @@ def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (без змін)
     if not update.message: return
-    chat_id = update.effective_chat.id
-    logger.info(f"Отримано /start для чату {chat_id}")
-    await update.message.reply_text("Починаю пошук...")
-    settings = get_user_settings(chat_id)
-    df = get_all_funding_data_sequential(settings['exchanges'])
-    message_text = format_funding_update(df, settings['threshold'])
-    await update.message.reply_text(text=message_text, parse_mode=ParseMode.HTML, reply_markup=get_main_menu_keyboard(), disable_web_page_preview=True)
+    await update.message.reply_text("👋 Вітаю! Оберіть режим роботи:", reply_markup=get_start_menu_keyboard())
 
-async def refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (без змін)
-    query = update.callback_query; await query.answer("Оновлюю дані...")
+async def show_funding_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
     chat_id = query.message.chat.id
     settings = get_user_settings(chat_id)
+    await query.edit_message_text("Починаю пошук фандінгу...")
     try:
         df = get_all_funding_data_sequential(settings['exchanges'])
         message_text = format_funding_update(df, settings['threshold'])
         await query.edit_message_text(text=message_text, parse_mode=ParseMode.HTML, reply_markup=get_main_menu_keyboard(), disable_web_page_preview=True)
-    except Exception as e: logger.error(f"ПОМИЛКА в refresh_callback: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Помилка в show_funding_report: {e}", exc_info=True)
+        await query.edit_message_text("😔 Виникла помилка.")
+
+async def show_funding_spread_soon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Ця функція знаходиться в розробці.", show_alert=True)
+
+async def refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_funding_report(update, context)
 
 async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (без змін)
     query = update.callback_query; await query.answer()
-    chat_id = query.message.chat.id
-    settings = get_user_settings(chat_id)
+    settings = get_user_settings(query.message.chat.id)
     await query.edit_message_text("⚙️ <b>Налаштування</b>", parse_mode=ParseMode.HTML, reply_markup=get_settings_menu_keyboard(settings))
 
 async def close_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    await refresh_callback(update, context)
+    await show_funding_report(update, context)
 
-# ... (обробники бірж без змін)
+# --- ДОДАНО ВІДСУТНІ ФУНКЦІЇ ---
+async def exchange_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    settings = get_user_settings(query.message.chat.id)
+    await query.edit_message_text("🌐 <b>Вибір бірж</b>", parse_mode=ParseMode.HTML, reply_markup=get_exchange_selection_keyboard(settings['exchanges']))
+async def toggle_exchange_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; exchange_name = query.data.split('_')[-1]
+    settings = get_user_settings(query.message.chat.id)
+    if exchange_name in settings['exchanges']: settings['exchanges'].remove(exchange_name)
+    else: settings['exchanges'].append(exchange_name)
+    update_user_setting(query.message.chat.id, 'exchanges', settings['exchanges'])
+    await query.edit_message_reply_markup(reply_markup=get_exchange_selection_keyboard(settings['exchanges']))
+    await query.answer(f"Біржа {exchange_name} оновлена")
+async def set_interval_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    await query.edit_message_text("⏳ <b>Час оновлення</b>\n\n(Функція авто-оновлення в розробці)", parse_mode=ParseMode.HTML, reply_markup=get_interval_selection_keyboard())
+async def set_interval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    interval = int(query.data.split('_')[-1])
+    update_user_setting(query.message.chat.id, 'update_interval', interval)
+    await query.answer(f"Інтервал встановлено. Авто-оновлення буде реалізовано пізніше.")
+    await settings_menu_callback(update, context)
+async def toggle_bot_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    settings = get_user_settings(query.message.chat.id)
+    new_status = not settings.get('enabled', True)
+    update_user_setting(query.message.chat.id, 'enabled', new_status)
+    await query.answer(f"Бот тепер {'УВІМКНЕНИЙ' if new_status else 'ВИМКНЕНИЙ'}")
+    await query.edit_message_reply_markup(reply_markup=get_settings_menu_keyboard(get_user_settings(query.message.chat.id)))
+# --------------------------------
 
 async def set_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
-    text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>.\nТобто бот надсилає сигнали з фандингом, більшим за +{settings['threshold']}% або меншим за -{settings['threshold']}%.\n\nУ повідомленні нижче ви можете задавати новий поріг. Дробові значення вказуйте через крапку, наприклад: <code>0.5</code>"
+    text = f"Зараз поріг: <b>{settings['threshold']}%</b>.\n\nНадішліть нове значення (напр., <code>0.5</code>)."
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=get_back_and_close_keyboard())
     return SET_THRESHOLD_STATE
 
@@ -202,34 +227,17 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
     try:
         new_threshold = abs(float(update.message.text.strip()))
         update_user_setting(chat_id, 'threshold', new_threshold)
-        await update.message.reply_text(f"✅ Чудово! Встановлено нове порогове значення фандингу: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML, reply_markup=get_back_and_close_keyboard())
-    except (ValueError, TypeError): await update.message.reply_text("Некоректне значення. Спробуйте ще раз.", reply_markup=get_back_and_close_keyboard())
-    # Не видаляємо повідомлення, щоб користувач міг спробувати ще раз
+        await update.message.reply_text(f"✅ Новий поріг: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML, reply_markup=get_back_and_close_keyboard())
+    except (ValueError, TypeError): await update.message.reply_text("Некоректне значення.", reply_markup=get_back_and_close_keyboard())
     return SET_THRESHOLD_STATE
 
-async def set_interval_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    await query.edit_message_text("⏳ <b>Час оновлення</b>\n\nОберіть інтервал. (Функція авто-оновлення в розробці)", parse_mode=ParseMode.HTML, reply_markup=get_interval_selection_keyboard())
-
-async def set_interval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    interval = int(query.data.split('_')[-1])
-    update_user_setting(query.message.chat.id, 'update_interval', interval)
-    await query.answer(f"Інтервал встановлено. Авто-оновлення буде реалізовано пізніше.")
-    await settings_menu_callback(update, context) # Повертаємось до меню
-
-async def toggle_bot_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (реалізація цієї функції)
-    pass
-
 async def copy_ticker_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text: return
-    ticker = update.message.text.split(' ')[-1]
-    await update.message.reply_text(f"<code>{ticker}</code>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Скопійовано", callback_data="dummy")]]))
-    await update.message.delete() # Видаляємо команду /copy
+    if not update.message or not update.message.text or len(update.message.text.split()) < 2: return
+    ticker = update.message.text.split(' ')[1]
+    await update.message.reply_text(f"<code>{ticker}</code>", parse_mode=ParseMode.HTML)
+    await update.message.delete()
 
 async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (без змін)
     if not update.message or not update.message.text: return
     ticker = update.message.text.strip().upper()
     settings = get_user_settings(update.effective_chat.id)
@@ -237,6 +245,17 @@ async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_T
     df = get_funding_for_ticker_sequential(ticker, settings['exchanges'])
     message_text = format_ticker_info(df, ticker)
     await message.edit_text(message_text, parse_mode=ParseMode.HTML, reply_markup=get_ticker_menu_keyboard(ticker), disable_web_page_preview=True)
+
+async def refresh_ticker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    ticker = query.data.split('_')[-1]
+    await query.answer(f"Оновлюю {ticker}...")
+    settings = get_user_settings(query.message.chat.id)
+    df = get_funding_for_ticker_sequential(ticker, settings['exchanges'])
+    message_text = format_ticker_info(df, ticker)
+    try:
+        await query.edit_message_text(text=message_text, parse_mode=ParseMode.HTML, reply_markup=get_ticker_menu_keyboard(ticker), disable_web_page_preview=True)
+    except Exception as e: logger.error(f"ПОМИЛКА в refresh_ticker_callback: {e}", exc_info=True)
 
 # --- ГОЛОВНА ФУНКЦІЯ ЗАПУСКУ ---
 def main() -> None:
@@ -246,16 +265,14 @@ def main() -> None:
     
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(set_threshold_callback, pattern="^settings_threshold$")],
-        states={SET_THRESHOLD_STATE: [MessageHandler(filters.TEXT, set_threshold_conversation)]},
-        fallbacks=[
-            CallbackQueryHandler(settings_menu_callback, pattern="^settings_menu$"),
-            CallbackQueryHandler(close_settings_callback, pattern="^close_settings$")
-        ],
-        per_message=True
+        states={SET_THRESHOLD_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_threshold_conversation)]},
+        fallbacks=[CallbackQueryHandler(settings_menu_callback, pattern="^settings_menu$"), CallbackQueryHandler(close_settings_callback, pattern="^close_settings$")]
     )
-    
+
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("copy", copy_ticker_command))
+    application.add_handler(CallbackQueryHandler(show_funding_report, pattern="^show_funding_only$"))
+    application.add_handler(CallbackQueryHandler(show_funding_spread_soon, pattern="^show_funding_spread_soon$"))
     application.add_handler(CallbackQueryHandler(refresh_callback, pattern="^refresh$"))
     application.add_handler(CallbackQueryHandler(settings_menu_callback, pattern="^settings_menu$"))
     application.add_handler(CallbackQueryHandler(close_settings_callback, pattern="^close_settings$"))
@@ -263,11 +280,12 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(toggle_exchange_callback, pattern="^toggle_exchange_"))
     application.add_handler(CallbackQueryHandler(set_interval_menu_callback, pattern="^settings_interval$"))
     application.add_handler(CallbackQueryHandler(set_interval_callback, pattern="^set_interval_"))
+    application.add_handler(CallbackQueryHandler(toggle_bot_status_callback, pattern="^toggle_bot_status$"))
     application.add_handler(CallbackQueryHandler(refresh_ticker_callback, pattern="^refresh_ticker_"))
     application.add_handler(conv_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_message_handler))
     
-    logger.info("Бот запускається (версія з повним меню)...")
+    logger.info("Бот запускається (фінальна версія 3.0)...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
