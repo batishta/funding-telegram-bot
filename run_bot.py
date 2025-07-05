@@ -1,134 +1,93 @@
-# run_bot.py (Версія без збереження файлів)
+# run_bot.py (СУПЕР-СПРОЩЕНА ВЕРСІЯ)
 
 import os
 import logging
-import multiprocessing as mp
 import time
-import uuid
-import asyncio
-from queue import Empty
-import pandas as pd
-import html
 
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, ConversationHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
-# --- Модулі, які раніше були в окремих файлах ---
-
-# З config.py
-DEFAULT_SETTINGS = {
-    "enabled": True, "threshold": 0.3, "interval": 60,
-    "exchanges": ['Binance', 'ByBit', 'OKX', 'MEXC', 'Bitget', 'KuCoin']
-}
-# З constants.py
-SET_THRESHOLD_STATE = 0
-
-# З user_manager.py (але тепер зберігаємо в пам'яті)
-_user_settings_cache = {}
-def get_user_settings(chat_id: int) -> dict:
-    chat_id_str = str(chat_id)
-    if chat_id_str not in _user_settings_cache:
-        _user_settings_cache[chat_id_str] = DEFAULT_SETTINGS.copy()
-    return _user_settings_cache[chat_id_str]
-
-def update_user_setting(chat_id: int, key: str, value):
-    chat_id_str = str(chat_id)
-    get_user_settings(chat_id) # Переконуємось, що словник існує
-    _user_settings_cache[chat_id_str][key] = value
-
-# З services/funding_service.py (без змін)
-# (я вставлю сюди код, щоб все було в одному місці)
-from src.services.funding_service import get_all_funding_data_sequential, get_funding_for_ticker_sequential
-from src.services.formatters import format_funding_update, format_ticker_info
-from src.keyboards import get_main_menu_keyboard, get_settings_menu_keyboard
+# Імпортуємо наші робочі модулі
+# Припускаємо, що цей файл в корені, а поруч є папка src
+from src.services.funding_service import get_all_funding_data_sequential
+from src.services.formatters import format_funding_update
+from src.keyboards import get_main_menu_keyboard
 
 # Налаштування логування
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-# --- Логіка Воркера ---
-def worker_process(task_queue: mp.Queue, result_queue: mp.Queue):
-    # ... (код воркера залишається без змін)
-    worker_logger = logging.getLogger("Worker")
-    while True:
-        try:
-            task_type, job_id, payload = task_queue.get()
-            if task_type is None: break
-            if task_type == 'get_all_funding':
-                result_df = get_all_funding_data_sequential(payload)
-            elif task_type == 'get_ticker_funding':
-                ticker, exchanges = payload
-                result_df = get_funding_for_ticker_sequential(ticker, exchanges)
-            else: result_df = pd.DataFrame()
-            result_queue.put((job_id, result_df))
-        except Exception as e:
-            worker_logger.error(f"Помилка у воркері: {e}")
 
-# --- Обробники ---
-bot_logger = logging.getLogger("BotHandler")
+# --- Налаштування ---
+# Оскільки ми не можемо зберігати налаштування, вони будуть однакові для всіх
+DEFAULT_EXCHANGES = ['Binance', 'ByBit', 'OKX', 'MEXC', 'Bitget', 'KuCoin']
+DEFAULT_THRESHOLD = 0.3
 
+
+# --- Обробник команди /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    bot_logger.info("!!! ОТРИМАНО КОМАНДУ /start !!!")
-    if not update.effective_chat or not update.message: return
+    if not update.effective_chat or not update.message:
+        return
         
     chat_id = update.effective_chat.id
-    bot_logger.info(f"Початок обробки для чату {chat_id}.")
+    logger.info(f"!!! ОТРИМАНО /start ВІД {chat_id} !!!")
     
-    # --- ЗМІНЕНО: БЕЗ РОБОТИ З ФАЙЛАМИ ---
-    settings = get_user_settings(chat_id)
-    bot_logger.info(f"Налаштування отримано з кешу. Біржі: {settings['exchanges']}")
-    # ------------------------------------
+    await update.message.reply_text("Починаю пошук... Це може зайняти до хвилини, бот не буде відповідати в цей час.")
+    logger.info("Надіслано перше повідомлення.")
 
-    task_queue = context.bot_data['task_queue']
-    result_queue = context.bot_data['result_queue']
-    job_id = str(uuid.uuid4())
-    
-    await update.message.reply_text("Відправляю завдання...")
-    bot_logger.info(f"Створено завдання #{job_id[:6]}.")
-    
-    task_queue.put(('get_all_funding', job_id, settings['exchanges']))
-    bot_logger.info(f"Завдання #{job_id[:6]} відправлено у воркер.")
-    
-    processing_message = await update.message.reply_text(f"Завдання в черзі. Очікую...")
-    
-    # ... (решта коду start без змін, логіка очікування результату) ...
-    result_df = None; start_time = time.time()
-    while time.time() - start_time < 120:
-        if not result_queue.empty():
-            try:
-                job_result_id, df = result_queue.get_nowait()
-                if job_result_id == job_id: result_df = df; break
-                else: result_queue.put((job_result_id, df))
-            except Empty: pass
-        await asyncio.sleep(1)
-    if result_df is not None:
-        message_text = format_funding_update(result_df, settings['threshold'])
-        await processing_message.edit_text(text=message_text, parse_mode=ParseMode.HTML, reply_markup=get_main_menu_keyboard(), disable_web_page_preview=True)
-    else:
-        await processing_message.edit_text("😔 Воркер не відповів вчасно.")
+    try:
+        # --- НАЙПРОСТІШИЙ ВИКЛИК ---
+        # Викликаємо функцію напряму. Це заблокує бота, але ми повинні побачити логи.
+        logger.info(">>> Починаю ПРЯМИЙ виклик get_all_funding_data_sequential...")
+        
+        start_time = time.time()
+        df = get_all_funding_data_sequential(DEFAULT_EXCHANGES)
+        end_time = time.time()
+        
+        logger.info(f"<<< Виклик завершено за {end_time - start_time:.2f} секунд.")
+        
+        if df.empty:
+            logger.info("Отримано пустий DataFrame, надсилаю повідомлення про це.")
+            await update.message.reply_text("Не вдалося отримати дані з бірж.")
+            return
 
-# ... (тут мають бути всі інші обробники: refresh_callback, settings_menu_callback, і т.д.)
-# Вони будуть використовувати нові функції get_user_settings та update_user_setting, які не працюють з файлами.
+        message_text = format_funding_update(df, DEFAULT_THRESHOLD)
+        logger.info("Повідомлення сформовано, надсилаю...")
+        
+        await update.message.reply_text(
+            text=message_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_menu_keyboard(),
+            disable_web_page_preview=True
+        )
+        logger.info("Фінальне повідомлення надіслано успішно.")
+
+    except Exception as e:
+        logger.error(f"Критична помилка в /start для {chat_id}: {e}", exc_info=True)
+        await update.message.reply_text("😔 Виникла критична помилка під час обробки.")
+
 
 # --- Головна функція запуску ---
 def main() -> None:
-    # ... (код main залишається без змін)
-    load_dotenv(); TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not TOKEN: logging.critical("!!! НЕ ЗНАЙДЕНО TOKEN !!!"); return
-    task_queue = mp.Queue(); result_queue = mp.Queue()
-    worker = mp.Process(target=worker_process, args=(task_queue, result_queue), daemon=True)
-    worker.start()
+    load_dotenv()
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not TOKEN:
+        logger.critical("!!! НЕ ЗНАЙДЕНО TELEGRAM_BOT_TOKEN !!!")
+        return
+
     application = Application.builder().token(TOKEN).build()
-    application.bot_data["task_queue"] = task_queue
-    application.bot_data["result_queue"] = result_queue
-    # Додаємо всі обробники
+    
+    # Реєструємо тільки /start
     application.add_handler(CommandHandler("start", start))
-    # ... (реєстрація інших обробників) ...
-    logging.info("Бот запускається (без збереження файлів)...")
+    
+    logger.info("Бот запускається в НАЙПРОСТІШОМУ режимі...")
     application.run_polling(drop_pending_updates=True)
 
+
 if __name__ == "__main__":
-    if os.name == 'nt': mp.set_start_method('spawn', force=True)
     main()
