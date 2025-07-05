@@ -1,4 +1,4 @@
-# run_bot.py (Фінальний фікс від 08.07)
+# run_bot.py (Фінальна версія з усіма виправленнями від 09.07)
 
 import os
 import logging
@@ -36,7 +36,7 @@ DEFAULT_SETTINGS = {
     "threshold": 0.3, "exchanges": ['Binance', 'ByBit', 'OKX', 'Bitget', 'KuCoin', 'MEXC', 'Gate.io'], "update_interval": 60
 }
 TOP_N = 10
-(SET_THRESHOLD_STATE, SET_INTERVAL_STATE) = range(2)
+(SET_THRESHOLD_STATE,) = range(1)
 HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
 
 # --- СЕРВІСНІ ФУНКЦІЇ ---
@@ -92,10 +92,10 @@ def get_settings_menu_keyboard(settings: dict):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 Біржі", callback_data="settings_exchanges")],
         [InlineKeyboardButton(f"📊 Фандінг: > {settings['threshold']}%", callback_data="settings_threshold")],
-        [InlineKeyboardButton(f"⏳ Час оновлення: {interval_text}", callback_data="settings_interval")], # ПОВЕРНУЛИ КНОПКУ
+        [InlineKeyboardButton(f"⏳ Час оновлення: {interval_text}", callback_data="settings_interval")],
         [InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")],
         [InlineKeyboardButton("ℹ️ Довідка", url=HELP_URL)],
-        [InlineKeyboardButton("❌ Закрити", callback_data="close_settings")]
+        [InlineKeyboardButton("↩️ Назад", callback_data="close_settings")] # ВИПРАВЛЕНО: Закрити -> Назад
     ])
 def get_exchange_selection_keyboard(selected_exchanges: list):
     buttons = []; row = []
@@ -135,39 +135,38 @@ def format_funding_update(df: pd.DataFrame, threshold: float) -> str:
     df['abs_rate'] = df['rate'].abs()
     filtered_df = df[df['abs_rate'] >= threshold].sort_values('abs_rate', ascending=False).head(TOP_N)
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
-    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>\n\n"
-    lines = []
+    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>\n" # ВИПРАВЛЕНО: Прибрано зайвий відступ
+    lines = ["<pre>"]
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        # ВИПРАВЛЕНО: Використовуємо `<code>` для копіювання і форматування
-        symbol_str = f"<code>{row['symbol']:<9}</code>"
-        rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
+        symbol_str = f"{row['symbol']:<9}"
+        rate_str = f"{row['rate']: >-8.4f}%"
         time_str = "##:## (##:##)"
         if pd.notna(row['next_funding_time']):
             local_time_str = row['next_funding_time'].astimezone(TARGET_TIMEZONE).strftime('%H:%M')
             time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
-            time_str = f"{local_time_str} {time_rem_str}"
-        
+            time_str = f"{local_time_str} {time_rem_str:<8}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        # Збираємо рядок з вирівнюванням
-        lines.append(f"{emoji} {symbol_str} | {rate_str} | {time_str:<15} | {exchange_str}")
+        lines.append(f"{emoji} {symbol_str} | {rate_str} | {time_str} | {exchange_str}")
+    lines.append("</pre>")
     return header + "\n".join(lines)
 
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
-    header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>\n\n"
-    lines = []
+    header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>\n"
+    lines = ["<pre>"]
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
         time_str = "##:## (##:##)"
         if pd.notna(row['next_funding_time']):
             local_time_str = row['next_funding_time'].astimezone(TARGET_TIMEZONE).strftime('%H:%M')
             time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
-            time_str = f"{local_time_str} {time_rem_str}"
+            time_str = f"{local_time_str} {time_rem_str:<8}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
         lines.append(f"{emoji} <b>{row['rate']: >-7.4f}%</b> | {time_str} | {exchange_str}")
+    lines.append("</pre>")
     return header + "\n".join(lines)
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
@@ -205,11 +204,10 @@ async def close_settings_callback(update: Update, context: ContextTypes.DEFAULT_
 async def set_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
-    # ВИПРАВЛЕНО: Текст повідомлення без зайвого рядка
-    text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>. Тобто бот надсилає сигнали з фандингом, більшим за +{settings['threshold']}% або меншим за -{settings['threshold']}%.\n\nНадішліть нове значення. Дробові значення вказуйте через крапку або кому."
+    text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>. Тобто бот надсилає сигнали з фандингом, більшим за +{settings['threshold']}% або меншим за -{settings['threshold']}%.\nНадішліть нове значення. Дробові значення вказуйте через крапку або кому."
     # Зберігаємо ID повідомлення з меню, щоб потім його видалити
     context.user_data['settings_message_id'] = query.message.message_id
-    await query.message.reply_text(text, parse_mode=ParseMode.HTML) # Надсилаємо нове повідомлення
+    await query.message.reply_text(text, parse_mode=ParseMode.HTML)
     return SET_THRESHOLD_STATE
 
 async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,12 +221,10 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
         # ВИПРАВЛЕНО: Видаляємо старі повідомлення
         settings_message_id = context.user_data.pop('settings_message_id', None)
         if settings_message_id:
-            try:
-                await context.bot.delete_message(chat_id, settings_message_id)
+            try: await context.bot.delete_message(chat_id, settings_message_id)
             except BadRequest: pass
         if update.message.reply_to_message:
-             try:
-                await context.bot.delete_message(chat_id, update.message.reply_to_message.message_id)
+             try: await context.bot.delete_message(chat_id, update.message.reply_to_message.message_id)
              except BadRequest: pass
         await update.message.delete()
         
@@ -237,7 +233,7 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
         await context.bot.send_message(chat_id, "⚙️ <b>Налаштування</b>", parse_mode=ParseMode.HTML, reply_markup=get_settings_menu_keyboard(settings))
     except (ValueError, TypeError):
         await update.message.reply_text("Некоректне значення. Спробуйте ще раз (напр., 0.5).")
-        return SET_THRESHOLD_STATE # Залишаємось у діалозі, щоб користувач міг спробувати ще раз
+        return SET_THRESHOLD_STATE
     return ConversationHandler.END
 
 async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -308,7 +304,7 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_message_handler))
     
-    logger.info("Бот запускається (фінальна версія)...")
+    logger.info("Бот запускається (версія з фінальними правками)...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
