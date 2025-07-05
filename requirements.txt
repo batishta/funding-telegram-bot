@@ -1,5 +1,6 @@
 # requirements.txt
-python-telegram-bot[ext]>=20.7
-ccxt>=4.2.0
-pandas>=2.0.0
-python-dotenv>=1.0.0
+python-telegram-bot[ext]
+ccxt
+pandas
+python-dotenv
+pytz
