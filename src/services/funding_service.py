@@ -1,55 +1,87 @@
 # src/services/funding_service.py
-# ЗАЛИШТЕ ЦЕЙ ФАЙЛ ТАКИМ, ЯК ВІН БУВ У ПОПЕРЕДНЬОМУ ПОВІДОМЛЕННІ
-# (з функцією get_all_funding_data_SEQUENTIAL)
+
 import ccxt
 import pandas as pd
 import logging
-from typing import List, Dict, Any
-from ..config import AVAILABLE_EXCHANGES
 
 logger = logging.getLogger(__name__)
 
-def get_all_funding_data_sequential(enabled_exchanges: List[str]) -> pd.DataFrame:
+def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     """
-    ДУЖЕ ПРОСТА І ПОВІЛЬНА функція.
-    Запитує дані з бірж ОДНА ЗА ОДНОЮ, послідовно.
+    Послідовно отримує дані з усіх увімкнених бірж,
+    використовуючи альтернативний метод для непідтримуваних.
     """
-    logger.info(f"!!! ЗАПУСК В РЕЖИМІ ДІАГНОСТИКИ (ПОСЛІДОВНИЙ) !!!")
+    logger.info(f"Запуск послідовного сканування для: {enabled_exchanges}")
     all_rates_list = []
     
     for name in enabled_exchanges:
-        logger.info(f"--- Починаю обробку біржі: {name} ---")
+        from src.config import AVAILABLE_EXCHANGES # Імпортуємо тут, щоб уникнути циклічних залежностей
         exchange_id = AVAILABLE_EXCHANGES.get(name)
         if not exchange_id:
             logger.warning(f"Пропускаю {name}: не знайдено ID в конфігурації.")
             continue
-            
+
         try:
-            exchange_class = getattr(ccxt, exchange_id)
-            exchange = exchange_class({'timeout': 30000}) # Таймаут 30 сек
+            logger.info(f"--- Обробка {name} ---")
+            exchange = getattr(ccxt, exchange_id)({'timeout': 20000}) # Таймаут 20 сек
             
-            logger.info(f"    -> Завантажую дані з {name}...")
+            # 1. Пробуємо стандартний, швидкий метод
             funding_rates_data = exchange.fetch_funding_rates()
-            logger.info(f"    <- Дані з {name} отримано. Обробляю...")
-            
+            logger.info(f"   -> {name} підтримує fetch_funding_rates(). Обробка...")
             for symbol, data in funding_rates_data.items():
                 if 'USDT' in symbol and data.get('fundingRate') is not None:
                     all_rates_list.append({
-                        'symbol': symbol.replace('/USDT:USDT', '').replace(':USDT', ''),
+                        'symbol': symbol.split('/')[0],
                         'rate': data['fundingRate'] * 100,
-                        'next_funding_time': pd.to_datetime(data.get('nextFundingTimestamp'), unit='ms', utc=True) if data.get('nextFundingTimestamp') else None,
                         'exchange': name
                     })
-            logger.info(f"--- Обробка {name} завершена. Отримано {len(all_rates_list)} ставок. ---")
+
+        except ccxt.NotSupported:
+            # 2. Якщо стандартний метод не працює, використовуємо альтернативний
+            logger.warning(f"   -> {name} не підтримує fetch_funding_rates(). Використовую альтернативний метод...")
+            try:
+                markets = exchange.load_markets()
+                # Фільтруємо тільки безстрокові USDT свопи
+                swap_symbols = [m['symbol'] for m in markets.values() if m.get('swap') and m.get('quote', '').upper() == 'USDT']
+                if not swap_symbols: continue
+
+                tickers = exchange.fetch_tickers(swap_symbols)
+                for symbol, ticker in tickers.items():
+                    rate_info = None
+                    if 'fundingRate' in ticker:
+                        rate_info = ticker['fundingRate']
+                    # Деякі біржі ховають дані в полі 'info'
+                    elif isinstance(ticker.get('info'), dict) and 'fundingRate' in ticker['info']:
+                        rate_info = ticker['info']['fundingRate']
+
+                    if rate_info is not None:
+                        all_rates_list.append({
+                            'symbol': symbol.split('/')[0],
+                            'rate': float(rate_info) * 100,
+                            'exchange': name
+                        })
+            except Exception as e:
+                logger.error(f"   ! Помилка альтернативного методу для {name}: {e}")
 
         except Exception as e:
-            logger.error(f"!!! ПОМИЛКА під час обробки {name}: {e} !!!", exc_info=True)
-            continue
-            
+            logger.error(f"   ! Загальна помилка при обробці {name}: {e}")
+
     if not all_rates_list:
-        logger.warning("Не вдалося отримати дані з жодної біржі.")
         return pd.DataFrame()
         
     df = pd.DataFrame(all_rates_list)
     df.drop_duplicates(subset=['symbol', 'exchange'], inplace=True, keep='first')
     return df
+
+def get_funding_for_ticker_sequential(ticker: str, enabled_exchanges: list) -> pd.DataFrame:
+    """Отримує дані для конкретного тикера, використовуючи основну функцію."""
+    ticker_clean = ticker.upper().replace("USDT", "").replace("/", "")
+    logger.info(f"Шукаю дані по тикеру {ticker_clean} на: {enabled_exchanges}")
+    
+    full_data = get_all_funding_data_sequential(enabled_exchanges)
+    
+    if full_data.empty:
+        return pd.DataFrame()
+        
+    ticker_data = full_data[full_data['symbol'] == ticker_clean]
+    return ticker_data.sort_values(by='rate', ascending=False)
