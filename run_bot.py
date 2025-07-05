@@ -1,4 +1,4 @@
-# run_bot.py (Фінальна версія з усіма виправленнями від 08.07)
+# run_bot.py (Фінальний фікс від 08.07)
 
 import os
 import logging
@@ -33,11 +33,11 @@ EXCHANGE_URL_TEMPLATES = {
     'BingX': 'https://swap.bingx.com/en-us/{symbol}-USDT'
 }
 DEFAULT_SETTINGS = {
-    "threshold": 0.3, "exchanges": ['Binance', 'ByBit', 'OKX', 'Bitget', 'KuCoin', 'MEXC', 'Gate.io']
+    "threshold": 0.3, "exchanges": ['Binance', 'ByBit', 'OKX', 'Bitget', 'KuCoin', 'MEXC', 'Gate.io'], "update_interval": 60
 }
 TOP_N = 10
-(SET_THRESHOLD_STATE,) = range(1)
-HELP_URL = "https://t.me/AIsportAnalyst"
+(SET_THRESHOLD_STATE, SET_INTERVAL_STATE) = range(2)
+HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
 
 # --- СЕРВІСНІ ФУНКЦІЇ ---
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
@@ -87,9 +87,12 @@ def update_user_setting(chat_id: int, key: str, value): get_user_settings(chat_i
 def get_start_menu_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("💎 Тільки Фандінг", callback_data="show_funding_only")], [InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")]])
 def get_main_menu_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Оновити", callback_data="refresh"), InlineKeyboardButton("⚙️ Налаштування", callback_data="settings_menu")]])
 def get_settings_menu_keyboard(settings: dict):
+    interval = settings.get('update_interval', 60)
+    interval_text = f"{interval} хв" if interval < 60 else f"{interval//60} год"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 Біржі", callback_data="settings_exchanges")],
         [InlineKeyboardButton(f"📊 Фандінг: > {settings['threshold']}%", callback_data="settings_threshold")],
+        [InlineKeyboardButton(f"⏳ Час оновлення: {interval_text}", callback_data="settings_interval")], # ПОВЕРНУЛИ КНОПКУ
         [InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")],
         [InlineKeyboardButton("ℹ️ Довідка", url=HELP_URL)],
         [InlineKeyboardButton("❌ Закрити", callback_data="close_settings")]
@@ -103,6 +106,12 @@ def get_exchange_selection_keyboard(selected_exchanges: list):
     if row: buttons.append(row)
     buttons.append([InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")])
     return InlineKeyboardMarkup(buttons)
+def get_interval_selection_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("5 хв", callback_data="set_interval_5"), InlineKeyboardButton("15 хв", callback_data="set_interval_15"), InlineKeyboardButton("30 хв", callback_data="set_interval_30")],
+        [InlineKeyboardButton("1 год", callback_data="set_interval_60"), InlineKeyboardButton("4 год", callback_data="set_interval_240"), InlineKeyboardButton("8 год", callback_data="set_interval_480")],
+        [InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")]
+    ])
 def get_back_to_settings_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")]])
 def get_ticker_menu_keyboard(ticker: str): return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Оновити", callback_data=f"refresh_ticker_{ticker}"), InlineKeyboardButton("↩️ Назад", callback_data="refresh")]])
 
@@ -127,18 +136,22 @@ def format_funding_update(df: pd.DataFrame, threshold: float) -> str:
     filtered_df = df[df['abs_rate'] >= threshold].sort_values('abs_rate', ascending=False).head(TOP_N)
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
     header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>\n\n"
-    lines = ["<pre>"]
+    lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        symbol_str = f"{row['symbol']:<9}"
-        rate_str = f"{row['rate']: >-8.4f}%"
-        local_time_str = (row['next_funding_time'].astimezone(TARGET_TIMEZONE)).strftime('%H:%M') if pd.notna(row['next_funding_time']) else "##:##"
-        time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
-        time_str = f"{local_time_str} {time_rem_str:<8}"
+        # ВИПРАВЛЕНО: Використовуємо `<code>` для копіювання і форматування
+        symbol_str = f"<code>{row['symbol']:<9}</code>"
+        rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
+        time_str = "##:## (##:##)"
+        if pd.notna(row['next_funding_time']):
+            local_time_str = row['next_funding_time'].astimezone(TARGET_TIMEZONE).strftime('%H:%M')
+            time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
+            time_str = f"{local_time_str} {time_rem_str}"
+        
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        lines.append(f"{emoji} {symbol_str} | {rate_str} | {time_str} | {exchange_str}")
-    lines.append("</pre>")
+        # Збираємо рядок з вирівнюванням
+        lines.append(f"{emoji} {symbol_str} | {rate_str} | {time_str:<15} | {exchange_str}")
     return header + "\n".join(lines)
 
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
@@ -147,9 +160,11 @@ def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     lines = []
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        local_time_str = (row['next_funding_time'].astimezone(TARGET_TIMEZONE)).strftime('%H:%M') if pd.notna(row['next_funding_time']) else "##:##"
-        time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
-        time_str = f"{local_time_str} {time_rem_str:<8}"
+        time_str = "##:## (##:##)"
+        if pd.notna(row['next_funding_time']):
+            local_time_str = row['next_funding_time'].astimezone(TARGET_TIMEZONE).strftime('%H:%M')
+            time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
+            time_str = f"{local_time_str} {time_rem_str}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
         lines.append(f"{emoji} <b>{row['rate']: >-7.4f}%</b> | {time_str} | {exchange_str}")
@@ -190,10 +205,11 @@ async def close_settings_callback(update: Update, context: ContextTypes.DEFAULT_
 async def set_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
+    # ВИПРАВЛЕНО: Текст повідомлення без зайвого рядка
     text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>. Тобто бот надсилає сигнали з фандингом, більшим за +{settings['threshold']}% або меншим за -{settings['threshold']}%.\n\nНадішліть нове значення. Дробові значення вказуйте через крапку або кому."
     # Зберігаємо ID повідомлення з меню, щоб потім його видалити
     context.user_data['settings_message_id'] = query.message.message_id
-    await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await query.message.reply_text(text, parse_mode=ParseMode.HTML) # Надсилаємо нове повідомлення
     return SET_THRESHOLD_STATE
 
 async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -203,18 +219,25 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
     try:
         new_threshold = abs(float(user_input))
         update_user_setting(chat_id, 'threshold', new_threshold)
+        
+        # ВИПРАВЛЕНО: Видаляємо старі повідомлення
         settings_message_id = context.user_data.pop('settings_message_id', None)
         if settings_message_id:
             try:
                 await context.bot.delete_message(chat_id, settings_message_id)
-            except BadRequest: pass # Ігноруємо помилку, якщо повідомлення вже видалено
+            except BadRequest: pass
+        if update.message.reply_to_message:
+             try:
+                await context.bot.delete_message(chat_id, update.message.reply_to_message.message_id)
+             except BadRequest: pass
         await update.message.delete()
+        
         settings = get_user_settings(chat_id)
         await context.bot.send_message(chat_id, f"✅ Чудово! Встановлено нове порогове значення фандингу: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML)
         await context.bot.send_message(chat_id, "⚙️ <b>Налаштування</b>", parse_mode=ParseMode.HTML, reply_markup=get_settings_menu_keyboard(settings))
     except (ValueError, TypeError):
         await update.message.reply_text("Некоректне значення. Спробуйте ще раз (напр., 0.5).")
-        return SET_THRESHOLD_STATE
+        return SET_THRESHOLD_STATE # Залишаємось у діалозі, щоб користувач міг спробувати ще раз
     return ConversationHandler.END
 
 async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -237,7 +260,6 @@ async def refresh_ticker_callback(update: Update, context: ContextTypes.DEFAULT_
     try: await query.edit_message_text(text=message_text, parse_mode=ParseMode.HTML, reply_markup=get_ticker_menu_keyboard(ticker), disable_web_page_preview=True)
     except Exception as e: logger.error(f"ПОМИЛКА в refresh_ticker_callback: {e}", exc_info=True)
 
-# ... (інші обробники без змін)
 async def exchange_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
@@ -250,6 +272,14 @@ async def toggle_exchange_callback(update: Update, context: ContextTypes.DEFAULT
     update_user_setting(query.message.chat.id, 'exchanges', settings['exchanges'])
     await query.edit_message_reply_markup(reply_markup=get_exchange_selection_keyboard(settings['exchanges']))
     await query.answer(f"Біржа {exchange_name} оновлена")
+async def set_interval_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    await query.edit_message_text("⏳ <b>Час оновлення</b>\n\nОберіть інтервал. Авто-оновлення буде реалізовано пізніше.", parse_mode=ParseMode.HTML, reply_markup=get_interval_selection_keyboard())
+async def set_interval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; interval = int(query.data.split('_')[-1])
+    update_user_setting(query.message.chat.id, 'update_interval', interval)
+    await query.answer(f"Інтервал встановлено.")
+    await settings_menu_callback(update, context)
 
 # --- ГОЛОВНА ФУНКЦІЯ ЗАПУСКУ ---
 def main() -> None:
@@ -272,11 +302,13 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(close_settings_callback, pattern="^close_settings$"))
     application.add_handler(CallbackQueryHandler(exchange_menu_callback, pattern="^settings_exchanges$"))
     application.add_handler(CallbackQueryHandler(toggle_exchange_callback, pattern="^toggle_exchange_"))
+    application.add_handler(CallbackQueryHandler(set_interval_menu_callback, pattern="^settings_interval$"))
+    application.add_handler(CallbackQueryHandler(set_interval_callback, pattern="^set_interval_"))
     application.add_handler(CallbackQueryHandler(refresh_ticker_callback, pattern="^refresh_ticker_"))
     application.add_handler(conv_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_message_handler))
     
-    logger.info("Бот запускається (версія з фінальними правками)...")
+    logger.info("Бот запускається (фінальна версія)...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
