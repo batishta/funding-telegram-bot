@@ -1,8 +1,9 @@
-# run_bot.py (Версія 2.2 - фікс AttributeError)
+# run_bot.py (Версія 2.3 - фінальні правки)
 
 import os
 import logging
 import html
+import asyncio
 import pandas as pd
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -30,9 +31,6 @@ TOP_N = 10
 (SET_THRESHOLD_STATE, ADD_TO_BLACKLIST_STATE, REMOVE_FROM_BLACKLIST_STATE) = range(3)
 HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
 
-# --- Глобальна змінна для імені бота ---
-bot_username = ""
-
 # --- СЕРВІСНІ ФУНКЦІЇ ---
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     all_rates = []
@@ -44,9 +42,7 @@ def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
             funding_rates_data = exchange.fetch_funding_rates()
             for symbol, data in funding_rates_data.items():
                 if 'USDT' in symbol and data.get('fundingRate') is not None:
-                    period_ms = data.get('fundingInterval', 8 * 3600 * 1000)
-                    period_hours = round(period_ms / (3600 * 1000))
-                    all_rates.append({'symbol': symbol.split('/')[0], 'rate': data['fundingRate'] * 100, 'exchange': name, 'period': f"{period_hours}ч"})
+                    all_rates.append({'symbol': symbol.split('/')[0], 'rate': data['fundingRate'] * 100, 'exchange': name})
         except ccxt.NotSupported:
             try:
                 markets = exchange.load_markets()
@@ -54,11 +50,11 @@ def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
                 if not swap_symbols: continue
                 tickers = exchange.fetch_tickers(swap_symbols)
                 for symbol, ticker in tickers.items():
-                    rate_info, period_info = None, "8ч"
+                    rate_info = None
                     if 'fundingRate' in ticker: rate_info = ticker['fundingRate']
                     elif isinstance(ticker.get('info'), dict) and 'fundingRate' in ticker['info']: rate_info = ticker['info']['fundingRate']
                     if rate_info is not None:
-                        all_rates.append({'symbol': symbol.split('/')[0], 'rate': float(rate_info) * 100, 'exchange': name, 'period': period_info})
+                        all_rates.append({'symbol': symbol.split('/')[0], 'rate': float(rate_info) * 100, 'exchange': name})
             except Exception as e: logger.error(f"Альт. метод для {name}: {e}")
         except Exception as e: logger.error(f"Загальна помилка для {name}: {e}")
     if not all_rates: return pd.DataFrame()
@@ -75,11 +71,10 @@ def update_user_setting(chat_id: int, key: str, value): get_user_settings(chat_i
 def get_start_menu_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("💎 Тільки Фандінг", callback_data="show_funding_only")], [InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")]])
 def get_main_menu_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Оновити", callback_data="refresh"), InlineKeyboardButton("⚙️ Налаштування", callback_data="settings_menu")]])
 def get_settings_menu_keyboard(settings: dict):
+    # ВИПРАВЛЕНО: Кнопки у два стовпчики
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌐 Біржі", callback_data="settings_exchanges")],
-        [InlineKeyboardButton(f"📊 Фандінг: > {settings['threshold']}%", callback_data="settings_threshold")],
-        [InlineKeyboardButton("🚫 Чорний список", callback_data="blacklist_menu")],
-        [InlineKeyboardButton("ℹ️ Довідка", url=HELP_URL)],
+        [InlineKeyboardButton("🌐 Біржі", callback_data="settings_exchanges"), InlineKeyboardButton(f"📊 Фандінг: > {settings['threshold']}%", callback_data="settings_threshold")],
+        [InlineKeyboardButton("🚫 Чорний список", callback_data="blacklist_menu"), InlineKeyboardButton("ℹ️ Довідка", url=HELP_URL)],
         [InlineKeyboardButton("↩️ Назад", callback_data="close_settings")]
     ])
 def get_blacklist_menu_keyboard(blacklist: list):
@@ -113,50 +108,33 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     filtered_df = best_offers[best_offers['abs_rate'] >= threshold].copy()
     filtered_df.sort_values('abs_rate', ascending=False, inplace=True)
     filtered_df = filtered_df.head(TOP_N)
-    
-    if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b> (поза чорним списком)."
+    if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
     header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
-    lines = [f"<code>{'Монета':<9} | {'Ставка':<11} | {'Період':<6} | Біржа</code>"] # Заголовки
+    lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        symbol_str = f"<a href=\"https://t.me/{bot_username}?start=ticker_{row['symbol']}\">{row['symbol']}</a>"
+        symbol_str = f"<code>{row['symbol']}</code>"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
-        period_str = f"{row['period']}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        lines.append(f"{emoji} <code>{row['symbol']:<9}</code> | <code>{rate_str:<11}</code> | <code>{period_str:<6}</code> | {exchange_str}")
-    return f"{header}\n" + "\n".join(lines) + "\n\n"
+        lines.append(f"{emoji} {symbol_str} | {rate_str} | {exchange_str}")
+    return f"{header}\n\n" + "\n".join(lines) + "\n\n" # Відступи знизу
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
     df.sort_values('rate', ascending=False, inplace=True)
-    lines = [f"<code>{'Ставка':<11} | {'Період':<6} | Біржа</code>"] # Заголовки
+    lines = []
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
-        period_str = f"{row['period']}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        lines.append(f"{emoji} <code>{rate_str:<11}</code> | <code>{period_str:<6}</code> | {exchange_str}")
-    return f"{header}\n" + "\n".join(lines) + "\n\n"
+        lines.append(f"{emoji} {rate_str} | {exchange_str}")
+    return f"{header}\n\n" + "\n".join(lines) + "\n\n"
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
-async def post_init(application: Application):
-    """Виконується після ініціалізації бота, щоб отримати його ім'я."""
-    global bot_username
-    bot_info = await application.bot.get_me()
-    bot_username = bot_info.username
-    logger.info(f"Бот запущений як @{bot_username}")
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
-    if context.args and context.args[0].startswith('ticker_'):
-        ticker = context.args[0].split('_')[1]
-        # Видаляємо повідомлення, яке містило команду /start з аргументом
-        try: await update.message.delete()
-        except: pass
-        await ticker_message_handler(update, context, ticker=ticker)
-        return
     await update.message.reply_text("👋 Вітаю! Оберіть режим роботи:", reply_markup=get_start_menu_keyboard())
 async def show_funding_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
@@ -183,7 +161,7 @@ async def close_settings_callback(update: Update, context: ContextTypes.DEFAULT_
 async def set_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
-    text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>.\nНадішліть нове значення (напр., 0.5)."
+    text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>.\nНадішліть нове значення (наприклад: 0.5)."
     sent_message = await query.message.reply_text(text, parse_mode=ParseMode.HTML)
     context.user_data['prompt_message_id'] = sent_message.message_id
     context.user_data['settings_message_id'] = query.message.message_id
@@ -204,31 +182,35 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
             try: await context.bot.delete_message(chat_id, settings_message_id)
             except BadRequest: pass
         await update.message.delete()
+        success_msg = await context.bot.send_message(chat_id, f"✅ Встановлено новий поріг: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML)
+        await asyncio.sleep(3)
+        await success_msg.delete()
         settings = get_user_settings(chat_id)
-        await context.bot.send_message(chat_id, f"✅ Встановлено новий поріг: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML)
         await context.bot.send_message(chat_id, "⚙️ <b>Налаштування</b>", parse_mode=ParseMode.HTML, reply_markup=get_settings_menu_keyboard(settings))
     except (ValueError, TypeError):
-        await update.message.reply_text("Некоректне значення. Спробуйте ще раз.")
+        await update.message.reply_text("Некоректне значення. Спробуйте ще раз (наприклад: 0.5).")
         return SET_THRESHOLD_STATE
     return ConversationHandler.END
-async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, ticker: str = None):
-    if not ticker:
-        if not update.message or not update.message.text: return
-        try:
-            float(update.message.text.strip().replace(',', '.')); return
-        except ValueError: pass
-        ticker = update.message.text.strip().upper()
-    
-    chat_id = update.effective_chat.id
-    settings = get_user_settings(chat_id)
-    message = await context.bot.send_message(chat_id, f"Шукаю <b>{html.escape(ticker)}</b>...", parse_mode=ParseMode.HTML)
-    df = get_funding_for_ticker_sequential(ticker, settings['exchanges'])
-    message_text = format_ticker_info(df, ticker)
+async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    try: float(update.message.text.strip().replace(',', '.')); return
+    except ValueError: pass
+    ticker = update.message.text.strip().upper()
+    settings = get_user_settings(update.effective_chat.id)
+    message = await update.message.reply_text(f"Шукаю <b>{html.escape(ticker)}</b>...", parse_mode=ParseMode.HTML)
+    df = get_all_funding_data_sequential(settings['exchanges'])
+    df_ticker = df[df['symbol'] == ticker]
+    message_text = format_ticker_info(df_ticker, ticker)
     await message.edit_text(message_text, parse_mode=ParseMode.HTML, reply_markup=get_ticker_menu_keyboard(ticker), disable_web_page_preview=True)
 async def refresh_ticker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; ticker = query.data.split('_')[-1]
     await query.answer(f"Оновлюю {ticker}...")
-    await ticker_message_handler(query, context, ticker=ticker)
+    settings = get_user_settings(query.message.chat.id)
+    df = get_all_funding_data_sequential(settings['exchanges'])
+    df_ticker = df[df['symbol'] == ticker]
+    message_text = format_ticker_info(df_ticker, ticker)
+    try: await query.edit_message_text(text=message_text, parse_mode=ParseMode.HTML, reply_markup=get_ticker_menu_keyboard(ticker), disable_web_page_preview=True)
+    except Exception as e: logger.error(f"ПОМИЛКА в refresh_ticker_callback: {e}", exc_info=True)
 async def exchange_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
@@ -248,35 +230,45 @@ async def blacklist_menu_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 async def add_to_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.edit_message_text("Надішліть назви монет для додавання в чорний список (через пробіл або кому).", reply_markup=get_back_to_settings_keyboard())
+    await query.message.reply_text("Надішліть назви монет для додавання в чорний список (через пробіл або кому).")
+    context.user_data['settings_message_id'] = query.message.message_id
     return ADD_TO_BLACKLIST_STATE
 async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return ConversationHandler.END
-    chat_id = update.effective_chat.id
-    settings = get_user_settings(chat_id)
+    chat_id = update.effective_chat.id; settings = get_user_settings(chat_id)
     blacklist = settings.get('blacklist', [])
     new_tickers = {t.strip().upper() for t in update.message.text.replace(",", " ").split()}
+    added_count = len(new_tickers - set(blacklist))
     blacklist.extend(list(new_tickers - set(blacklist)))
     update_user_setting(chat_id, 'blacklist', blacklist)
     await update.message.delete()
-    await context.bot.delete_message(chat_id, update.message.reply_to_message.message_id)
+    if 'settings_message_id' in context.user_data:
+        try: await context.bot.delete_message(chat_id, context.user_data.pop('settings_message_id'))
+        except: pass
+    success_msg = await context.bot.send_message(chat_id, f"✅ Додано {added_count} монет у чорний список.")
+    await asyncio.sleep(3); await success_msg.delete()
     text, keyboard = get_blacklist_menu_keyboard(blacklist)
     await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     return ConversationHandler.END
 async def remove_from_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.edit_message_text("Надішліть назви монет для видалення з чорного списку.", reply_markup=get_back_to_settings_keyboard())
+    await query.message.reply_text("Надішліть назви монет для видалення з чорного списку.")
+    context.user_data['settings_message_id'] = query.message.message_id
     return REMOVE_FROM_BLACKLIST_STATE
 async def remove_from_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return ConversationHandler.END
-    chat_id = update.effective_chat.id
-    settings = get_user_settings(chat_id)
+    chat_id = update.effective_chat.id; settings = get_user_settings(chat_id)
     blacklist = settings.get('blacklist', [])
     tickers_to_remove = {t.strip().upper() for t in update.message.text.replace(",", " ").split()}
+    removed_count = len(set(blacklist) & tickers_to_remove)
     blacklist = [t for t in blacklist if t not in tickers_to_remove]
     update_user_setting(chat_id, 'blacklist', blacklist)
     await update.message.delete()
-    await context.bot.delete_message(chat_id, update.message.reply_to_message.message_id)
+    if 'settings_message_id' in context.user_data:
+        try: await context.bot.delete_message(chat_id, context.user_data.pop('settings_message_id'))
+        except: pass
+    success_msg = await context.bot.send_message(chat_id, f"✅ Видалено {removed_count} монет з чорного списку.")
+    await asyncio.sleep(3); await success_msg.delete()
     text, keyboard = get_blacklist_menu_keyboard(blacklist)
     await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     return ConversationHandler.END
@@ -285,12 +277,10 @@ async def remove_from_blacklist_conversation(update: Update, context: ContextTyp
 def main() -> None:
     load_dotenv(); TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN: logger.critical("!!! НЕ ЗНАЙДЕНО TOKEN !!!"); return
-    
-    # ВИПРАВЛЕНО: Правильний спосіб отримати ім'я бота
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
+    application = Application.builder().token(TOKEN).build()
     
     threshold_conv = ConversationHandler(entry_points=[CallbackQueryHandler(set_threshold_callback, pattern="^settings_threshold$")], states={SET_THRESHOLD_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_threshold_conversation)]}, fallbacks=[CallbackQueryHandler(settings_menu_callback, pattern="^settings_menu$")], per_message=False)
-    blacklist_conv = ConversationHandler(entry_points=[CallbackQueryHandler(add_to_blacklist_callback, pattern="^add_to_blacklist$"), CallbackQueryHandler(remove_from_blacklist_callback, pattern="^remove_from_blacklist$")], states={ADD_TO_BLACKLIST_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_to_blacklist_conversation)], REMOVE_FROM_BLACKLIST_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_from_blacklist_conversation)]}, fallbacks=[CallbackQueryHandler(settings_menu_callback, pattern="^settings_menu$")], per_message=False)
+    blacklist_conv = ConversationHandler(entry_points=[CallbackQueryHandler(add_to_blacklist_callback, pattern="^add_to_blacklist$"), CallbackQueryHandler(remove_from_blacklist_callback, pattern="^remove_from_blacklist$")], states={ADD_TO_BLACKLIST_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_to_blacklist_conversation)], REMOVE_FROM_BLACKLIST_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_from_blacklist_conversation)]}, fallbacks=[CallbackQueryHandler(blacklist_menu_callback, pattern="^blacklist_menu$")], per_message=False)
     
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(show_funding_report, pattern="^show_funding_only$"))
@@ -306,7 +296,7 @@ def main() -> None:
     application.add_handler(blacklist_conv)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_message_handler))
     
-    logger.info("Бот запускається (версія 2.2)...")
+    logger.info("Бот запускається (версія 2.3)...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
