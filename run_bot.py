@@ -1,4 +1,4 @@
-# run_bot.py (Фінальна версія з усіма виправленнями від 09.07)
+# run_bot.py (Фінальна, перевірена версія від 09.07)
 
 import os
 import logging
@@ -95,7 +95,7 @@ def get_settings_menu_keyboard(settings: dict):
         [InlineKeyboardButton(f"⏳ Час оновлення: {interval_text}", callback_data="settings_interval")],
         [InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")],
         [InlineKeyboardButton("ℹ️ Довідка", url=HELP_URL)],
-        [InlineKeyboardButton("↩️ Назад", callback_data="close_settings")] # ВИПРАВЛЕНО: Закрити -> Назад
+        [InlineKeyboardButton("↩️ Назад", callback_data="close_settings")]
     ])
 def get_exchange_selection_keyboard(selected_exchanges: list):
     buttons = []; row = []
@@ -117,8 +117,8 @@ def get_ticker_menu_keyboard(ticker: str): return InlineKeyboardMarkup([[InlineK
 
 # --- ФОРМАТУВАЛЬНИКИ ---
 def format_time_remaining(dt_object):
-    if not isinstance(dt_object, pd.Timestamp): return "##:##"
-    now_utc = datetime.now(dt_object.tz)
+    if not isinstance(dt_object, pd.Timestamp) or pd.isna(dt_object): return "##:##"
+    now_utc = datetime.now(pytz.utc)
     delta = dt_object - now_utc
     if delta.total_seconds() < 0: return "00:00"
     hours, remainder = divmod(int(delta.total_seconds()), 3600)
@@ -133,41 +133,44 @@ def get_trade_link(exchange: str, symbol: str) -> str:
 def format_funding_update(df: pd.DataFrame, threshold: float) -> str:
     if df.empty: return "Не знайдено даних по фандінгу."
     df['abs_rate'] = df['rate'].abs()
-    filtered_df = df[df['abs_rate'] >= threshold].sort_values('abs_rate', ascending=False).head(TOP_N)
+    filtered_df = df[df['abs_rate'] >= threshold].copy()
+    filtered_df.sort_values('abs_rate', ascending=False, inplace=True)
+    filtered_df = filtered_df.head(TOP_N)
+    
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
-    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>\n" # ВИПРАВЛЕНО: Прибрано зайвий відступ
-    lines = ["<pre>"]
+    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
+    lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        symbol_str = f"{row['symbol']:<9}"
-        rate_str = f"{row['rate']: >-8.4f}%"
+        symbol_str = f"<code>{row['symbol']}</code>"
+        rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
         time_str = "##:## (##:##)"
         if pd.notna(row['next_funding_time']):
             local_time_str = row['next_funding_time'].astimezone(TARGET_TIMEZONE).strftime('%H:%M')
             time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
-            time_str = f"{local_time_str} {time_rem_str:<8}"
+            time_str = f"{local_time_str} {time_rem_str}"
+        
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
         lines.append(f"{emoji} {symbol_str} | {rate_str} | {time_str} | {exchange_str}")
-    lines.append("</pre>")
-    return header + "\n".join(lines)
+    
+    return header + "\n\n" + "\n".join(lines)
 
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
-    header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>\n"
-    lines = ["<pre>"]
+    header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
+    lines = []
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
         time_str = "##:## (##:##)"
         if pd.notna(row['next_funding_time']):
             local_time_str = row['next_funding_time'].astimezone(TARGET_TIMEZONE).strftime('%H:%M')
             time_rem_str = f"({format_time_remaining(row['next_funding_time'])})"
-            time_str = f"{local_time_str} {time_rem_str:<8}"
+            time_str = f"{local_time_str} {time_rem_str}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
         lines.append(f"{emoji} <b>{row['rate']: >-7.4f}%</b> | {time_str} | {exchange_str}")
-    lines.append("</pre>")
-    return header + "\n".join(lines)
+    return header + "\n\n" + "\n".join(lines)
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -205,9 +208,9 @@ async def set_threshold_callback(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
     text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>. Тобто бот надсилає сигнали з фандингом, більшим за +{settings['threshold']}% або меншим за -{settings['threshold']}%.\nНадішліть нове значення. Дробові значення вказуйте через крапку або кому."
-    # Зберігаємо ID повідомлення з меню, щоб потім його видалити
+    sent_message = await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+    context.user_data['prompt_message_id'] = sent_message.message_id
     context.user_data['settings_message_id'] = query.message.message_id
-    await query.message.reply_text(text, parse_mode=ParseMode.HTML)
     return SET_THRESHOLD_STATE
 
 async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -218,14 +221,14 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
         new_threshold = abs(float(user_input))
         update_user_setting(chat_id, 'threshold', new_threshold)
         
-        # ВИПРАВЛЕНО: Видаляємо старі повідомлення
+        prompt_message_id = context.user_data.pop('prompt_message_id', None)
+        if prompt_message_id:
+            try: await context.bot.delete_message(chat_id, prompt_message_id)
+            except BadRequest: pass
         settings_message_id = context.user_data.pop('settings_message_id', None)
         if settings_message_id:
             try: await context.bot.delete_message(chat_id, settings_message_id)
             except BadRequest: pass
-        if update.message.reply_to_message:
-             try: await context.bot.delete_message(chat_id, update.message.reply_to_message.message_id)
-             except BadRequest: pass
         await update.message.delete()
         
         settings = get_user_settings(chat_id)
@@ -304,7 +307,7 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_message_handler))
     
-    logger.info("Бот запускається (версія з фінальними правками)...")
+    logger.info("Бот запускається (версія з остаточними виправленнями)...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
