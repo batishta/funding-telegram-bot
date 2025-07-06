@@ -1,4 +1,4 @@
-# run_bot.py (Версія 2.3 - фінальні правки)
+# run_bot.py (Версія 2.4)
 
 import os
 import logging
@@ -34,6 +34,7 @@ HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
 # --- СЕРВІСНІ ФУНКЦІЇ ---
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     all_rates = []
+    # ... (код цієї функції не змінюється)
     for name in enabled_exchanges:
         exchange_id = AVAILABLE_EXCHANGES.get(name)
         if not exchange_id: continue
@@ -74,8 +75,8 @@ def get_settings_menu_keyboard(settings: dict):
     # ВИПРАВЛЕНО: Кнопки у два стовпчики
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 Біржі", callback_data="settings_exchanges"), InlineKeyboardButton(f"📊 Фандінг: > {settings['threshold']}%", callback_data="settings_threshold")],
-        [InlineKeyboardButton("🚫 Чорний список", callback_data="blacklist_menu"), InlineKeyboardButton("ℹ️ Довідка", url=HELP_URL)],
-        [InlineKeyboardButton("↩️ Назад", callback_data="close_settings")]
+        [InlineKeyboardButton("🚫 Чорний список", callback_data="blacklist_menu"), InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")],
+        [InlineKeyboardButton("ℹ️ Довідка", url=HELP_URL), InlineKeyboardButton("↩️ Назад", callback_data="close_settings")]
     ])
 def get_blacklist_menu_keyboard(blacklist: list):
     text = "🚫 Ваш чорний список:\n"
@@ -86,11 +87,15 @@ def get_blacklist_menu_keyboard(blacklist: list):
 def get_back_to_settings_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")]])
 def get_ticker_menu_keyboard(ticker: str): return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Оновити", callback_data=f"refresh_ticker_{ticker}"), InlineKeyboardButton("↩️ Назад", callback_data="refresh")]])
 def get_exchange_selection_keyboard(selected_exchanges: list):
-    buttons = []; row = []
+    # ВИПРАВЛЕНО: 3х3 сітка
+    buttons = []
+    row = []
     for name in AVAILABLE_EXCHANGES.keys():
         text = f"✅ {name}" if name in selected_exchanges else f"☑️ {name}"
         row.append(InlineKeyboardButton(text, callback_data=f"toggle_exchange_{name}"))
-        if len(row) == 2: buttons.append(row); row = []
+        if len(row) == 3: # 3 кнопки в рядку
+            buttons.append(row)
+            row = []
     if row: buttons.append(row)
     buttons.append([InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")])
     return InlineKeyboardMarkup(buttons)
@@ -108,20 +113,24 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     filtered_df = best_offers[best_offers['abs_rate'] >= threshold].copy()
     filtered_df.sort_values('abs_rate', ascending=False, inplace=True)
     filtered_df = filtered_df.head(TOP_N)
+    
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
     header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
+    # ВИПРАВЛЕНО: Повертаємо робоче форматування з `<code>`
     lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        symbol_str = f"<code>{row['symbol']}</code>"
+        symbol_str = f"<code>{row['symbol']:<9}</code>"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
         lines.append(f"{emoji} {symbol_str} | {rate_str} | {exchange_str}")
-    return f"{header}\n\n" + "\n".join(lines) + "\n\n" # Відступи знизу
+    
+    return f"{header}\n\n" + "\n".join(lines) + "\n\n" # Відступ знизу
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
+    # ВИПРАВЛЕНО: Сортування
     df.sort_values('rate', ascending=False, inplace=True)
     lines = []
     for _, row in df.iterrows():
@@ -183,8 +192,7 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
             except BadRequest: pass
         await update.message.delete()
         success_msg = await context.bot.send_message(chat_id, f"✅ Встановлено новий поріг: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML)
-        await asyncio.sleep(3)
-        await success_msg.delete()
+        await asyncio.sleep(3); await success_msg.delete()
         settings = get_user_settings(chat_id)
         await context.bot.send_message(chat_id, "⚙️ <b>Налаштування</b>", parse_mode=ParseMode.HTML, reply_markup=get_settings_menu_keyboard(settings))
     except (ValueError, TypeError):
@@ -192,6 +200,7 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
         return SET_THRESHOLD_STATE
     return ConversationHandler.END
 async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ВИПРАВЛЕНО: Відновлено робочу логіку
     if not update.message or not update.message.text: return
     try: float(update.message.text.strip().replace(',', '.')); return
     except ValueError: pass
@@ -241,10 +250,10 @@ async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DE
     added_count = len(new_tickers - set(blacklist))
     blacklist.extend(list(new_tickers - set(blacklist)))
     update_user_setting(chat_id, 'blacklist', blacklist)
-    await update.message.delete()
     if 'settings_message_id' in context.user_data:
         try: await context.bot.delete_message(chat_id, context.user_data.pop('settings_message_id'))
         except: pass
+    await update.message.delete()
     success_msg = await context.bot.send_message(chat_id, f"✅ Додано {added_count} монет у чорний список.")
     await asyncio.sleep(3); await success_msg.delete()
     text, keyboard = get_blacklist_menu_keyboard(blacklist)
@@ -263,10 +272,10 @@ async def remove_from_blacklist_conversation(update: Update, context: ContextTyp
     removed_count = len(set(blacklist) & tickers_to_remove)
     blacklist = [t for t in blacklist if t not in tickers_to_remove]
     update_user_setting(chat_id, 'blacklist', blacklist)
-    await update.message.delete()
     if 'settings_message_id' in context.user_data:
         try: await context.bot.delete_message(chat_id, context.user_data.pop('settings_message_id'))
         except: pass
+    await update.message.delete()
     success_msg = await context.bot.send_message(chat_id, f"✅ Видалено {removed_count} монет з чорного списку.")
     await asyncio.sleep(3); await success_msg.delete()
     text, keyboard = get_blacklist_menu_keyboard(blacklist)
