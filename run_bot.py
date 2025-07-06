@@ -1,4 +1,4 @@
-# run_bot.py (Версія 2.2)
+# run_bot.py (Версія 2.2 - фікс AttributeError)
 
 import os
 import logging
@@ -18,22 +18,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # --- КОНФІГУРАЦІЯ ---
 AVAILABLE_EXCHANGES = {'Binance': 'binanceusdm', 'ByBit': 'bybit', 'MEXC': 'mexc', 'OKX': 'okx', 'Bitget': 'bitget', 'KuCoin': 'kucoinfutures', 'Gate.io': 'gate', 'Huobi': 'huobi', 'BingX': 'bingx'}
-# ВИПРАВЛЕНО: Шаблони URL
 EXCHANGE_URL_TEMPLATES = {
-    'Binance': 'https://www.binance.com/en/futures/{symbol}',
-    'ByBit': 'https://www.bybit.com/trade/usdt/{symbol}',
-    'MEXC': 'https://futures.mexc.com/exchange/{symbol_base}_USDT',
-    'OKX': 'https://www.okx.com/trade-swap/{symbol_hyphen}',
-    'Bitget': 'https://www.bitget.com/futures/usdt/{symbol}',
-    'KuCoin': 'https://www.kucoin.com/futures/trade/{symbol}',
-    'Gate.io': 'https://www.gate.io/futures_trade/USDT/{symbol_base}_USDT',
-    'Huobi': 'https://futures.huobi.com/en-us/linear_swap/exchange/swap_trade/?contract_code={symbol}-USDT',
+    'Binance': 'https://www.binance.com/en/futures/{symbol}', 'ByBit': 'https://www.bybit.com/trade/usdt/{symbol}',
+    'MEXC': 'https://futures.mexc.com/exchange/{symbol_base}_USDT', 'OKX': 'https://www.okx.com/trade-swap/{symbol_hyphen}',
+    'Bitget': 'https://www.bitget.com/futures/usdt/{symbol}', 'KuCoin': 'https://www.kucoin.com/futures/trade/{symbol}',
+    'Gate.io': 'https://www.gate.io/futures_trade/USDT/{symbol_base}_USDT', 'Huobi': 'https://futures.huobi.com/en-us/linear_swap/exchange/swap_trade/?contract_code={symbol}-USDT',
     'BingX': 'https://swap.bingx.com/en-us/{symbol}-USDT'
 }
 DEFAULT_SETTINGS = {"threshold": 0.3, "exchanges": ['Binance', 'ByBit', 'OKX', 'Bitget', 'KuCoin', 'MEXC', 'Gate.io'], "blacklist": []}
 TOP_N = 10
 (SET_THRESHOLD_STATE, ADD_TO_BLACKLIST_STATE, REMOVE_FROM_BLACKLIST_STATE) = range(3)
 HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
+
+# --- Глобальна змінна для імені бота ---
+bot_username = ""
 
 # --- СЕРВІСНІ ФУНКЦІЇ ---
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
@@ -46,7 +44,9 @@ def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
             funding_rates_data = exchange.fetch_funding_rates()
             for symbol, data in funding_rates_data.items():
                 if 'USDT' in symbol and data.get('fundingRate') is not None:
-                    all_rates.append({'symbol': symbol.split('/')[0], 'rate': data['fundingRate'] * 100, 'exchange': name})
+                    period_ms = data.get('fundingInterval', 8 * 3600 * 1000)
+                    period_hours = round(period_ms / (3600 * 1000))
+                    all_rates.append({'symbol': symbol.split('/')[0], 'rate': data['fundingRate'] * 100, 'exchange': name, 'period': f"{period_hours}ч"})
         except ccxt.NotSupported:
             try:
                 markets = exchange.load_markets()
@@ -54,11 +54,11 @@ def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
                 if not swap_symbols: continue
                 tickers = exchange.fetch_tickers(swap_symbols)
                 for symbol, ticker in tickers.items():
-                    rate_info = None
+                    rate_info, period_info = None, "8ч"
                     if 'fundingRate' in ticker: rate_info = ticker['fundingRate']
                     elif isinstance(ticker.get('info'), dict) and 'fundingRate' in ticker['info']: rate_info = ticker['info']['fundingRate']
                     if rate_info is not None:
-                        all_rates.append({'symbol': symbol.split('/')[0], 'rate': float(rate_info) * 100, 'exchange': name})
+                        all_rates.append({'symbol': symbol.split('/')[0], 'rate': float(rate_info) * 100, 'exchange': name, 'period': period_info})
             except Exception as e: logger.error(f"Альт. метод для {name}: {e}")
         except Exception as e: logger.error(f"Загальна помилка для {name}: {e}")
     if not all_rates: return pd.DataFrame()
@@ -115,42 +115,49 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     filtered_df = filtered_df.head(TOP_N)
     
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b> (поза чорним списком)."
-    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>\n"
-    lines = []
+    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
+    lines = [f"<code>{'Монета':<9} | {'Ставка':<11} | {'Період':<6} | Біржа</code>"] # Заголовки
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        # ВИПРАВЛЕНО: Тикер тепер є callback-кнопкою
         symbol_str = f"<a href=\"https://t.me/{bot_username}?start=ticker_{row['symbol']}\">{row['symbol']}</a>"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
+        period_str = f"{row['period']}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        lines.append(f"{emoji} {symbol_str} | {rate_str} | {exchange_str}")
-    
-    return header + "\n".join(lines) + "\n\n" # Відступ знизу
+        lines.append(f"{emoji} <code>{row['symbol']:<9}</code> | <code>{rate_str:<11}</code> | <code>{period_str:<6}</code> | {exchange_str}")
+    return f"{header}\n" + "\n".join(lines) + "\n\n"
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
-    df.sort_values('rate', ascending=False, inplace=True) # Сортуємо від більшого до меншого
-    lines = []
+    df.sort_values('rate', ascending=False, inplace=True)
+    lines = [f"<code>{'Ставка':<11} | {'Період':<6} | Біржа</code>"] # Заголовки
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
+        period_str = f"{row['period']}"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        lines.append(f"{emoji} {rate_str} | {exchange_str}")
+        lines.append(f"{emoji} <code>{rate_str:<11}</code> | <code>{period_str:<6}</code> | {exchange_str}")
     return f"{header}\n" + "\n".join(lines) + "\n\n"
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
+async def post_init(application: Application):
+    """Виконується після ініціалізації бота, щоб отримати його ім'я."""
+    global bot_username
+    bot_info = await application.bot.get_me()
+    bot_username = bot_info.username
+    logger.info(f"Бот запущений як @{bot_username}")
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
-    # Обробка deep-linking для клікабельних тикерів
     if context.args and context.args[0].startswith('ticker_'):
         ticker = context.args[0].split('_')[1]
-        await update.message.delete()
+        # Видаляємо повідомлення, яке містило команду /start з аргументом
+        try: await update.message.delete()
+        except: pass
         await ticker_message_handler(update, context, ticker=ticker)
         return
     await update.message.reply_text("👋 Вітаю! Оберіть режим роботи:", reply_markup=get_start_menu_keyboard())
-
 async def show_funding_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     chat_id = query.message.chat.id
@@ -176,7 +183,7 @@ async def close_settings_callback(update: Update, context: ContextTypes.DEFAULT_
 async def set_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
-    text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>. Тобто бот надсилає сигнали з фандингом, більшим за +{settings['threshold']}% або меншим за -{settings['threshold']}%.\nНадішліть нове значення. Дробові значення вказуйте через крапку або кому."
+    text = f"Зараз встановлено значення <b>{settings['threshold']}%</b>.\nНадішліть нове значення (напр., 0.5)."
     sent_message = await query.message.reply_text(text, parse_mode=ParseMode.HTML)
     context.user_data['prompt_message_id'] = sent_message.message_id
     context.user_data['settings_message_id'] = query.message.message_id
@@ -198,18 +205,23 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
             except BadRequest: pass
         await update.message.delete()
         settings = get_user_settings(chat_id)
-        await context.bot.send_message(chat_id, f"✅ Чудово! Встановлено нове порогове значення фандингу: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML)
+        await context.bot.send_message(chat_id, f"✅ Встановлено новий поріг: <b>+/- {new_threshold}%</b>", parse_mode=ParseMode.HTML)
         await context.bot.send_message(chat_id, "⚙️ <b>Налаштування</b>", parse_mode=ParseMode.HTML, reply_markup=get_settings_menu_keyboard(settings))
     except (ValueError, TypeError):
-        await update.message.reply_text("Некоректне значення. Спробуйте ще раз (напр., 0.5).")
+        await update.message.reply_text("Некоректне значення. Спробуйте ще раз.")
         return SET_THRESHOLD_STATE
     return ConversationHandler.END
 async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, ticker: str = None):
     if not ticker:
         if not update.message or not update.message.text: return
+        try:
+            float(update.message.text.strip().replace(',', '.')); return
+        except ValueError: pass
         ticker = update.message.text.strip().upper()
-    settings = get_user_settings(update.effective_chat.id)
-    message = await context.bot.send_message(update.effective_chat.id, f"Шукаю <b>{html.escape(ticker)}</b>...", parse_mode=ParseMode.HTML)
+    
+    chat_id = update.effective_chat.id
+    settings = get_user_settings(chat_id)
+    message = await context.bot.send_message(chat_id, f"Шукаю <b>{html.escape(ticker)}</b>...", parse_mode=ParseMode.HTML)
     df = get_funding_for_ticker_sequential(ticker, settings['exchanges'])
     message_text = format_ticker_info(df, ticker)
     await message.edit_text(message_text, parse_mode=ParseMode.HTML, reply_markup=get_ticker_menu_keyboard(ticker), disable_web_page_preview=True)
@@ -236,7 +248,7 @@ async def blacklist_menu_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 async def add_to_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.edit_message_text("Надішліть назви монет, які потрібно додати до чорного списку (через пробіл або кому).", reply_markup=get_back_to_settings_keyboard())
+    await query.edit_message_text("Надішліть назви монет для додавання в чорний список (через пробіл або кому).", reply_markup=get_back_to_settings_keyboard())
     return ADD_TO_BLACKLIST_STATE
 async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return ConversationHandler.END
@@ -253,7 +265,7 @@ async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DE
     return ConversationHandler.END
 async def remove_from_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.edit_message_text("Надішліть назви монет, які потрібно видалити з чорного списку.", reply_markup=get_back_to_settings_keyboard())
+    await query.edit_message_text("Надішліть назви монет для видалення з чорного списку.", reply_markup=get_back_to_settings_keyboard())
     return REMOVE_FROM_BLACKLIST_STATE
 async def remove_from_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return ConversationHandler.END
@@ -274,13 +286,9 @@ def main() -> None:
     load_dotenv(); TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN: logger.critical("!!! НЕ ЗНАЙДЕНО TOKEN !!!"); return
     
-    global bot_username
-    bot_info = ccxt.async_support.Bot(TOKEN).get_me()
-    bot_username = bot_info.username
+    # ВИПРАВЛЕНО: Правильний спосіб отримати ім'я бота
+    application = Application.builder().token(TOKEN).post_init(post_init).build()
     
-    application = Application.builder().token(TOKEN).build()
-    
-    # ... (реєстрація всіх обробників, включаючи нові для ЧС)
     threshold_conv = ConversationHandler(entry_points=[CallbackQueryHandler(set_threshold_callback, pattern="^settings_threshold$")], states={SET_THRESHOLD_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_threshold_conversation)]}, fallbacks=[CallbackQueryHandler(settings_menu_callback, pattern="^settings_menu$")], per_message=False)
     blacklist_conv = ConversationHandler(entry_points=[CallbackQueryHandler(add_to_blacklist_callback, pattern="^add_to_blacklist$"), CallbackQueryHandler(remove_from_blacklist_callback, pattern="^remove_from_blacklist$")], states={ADD_TO_BLACKLIST_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_to_blacklist_conversation)], REMOVE_FROM_BLACKLIST_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_from_blacklist_conversation)]}, fallbacks=[CallbackQueryHandler(settings_menu_callback, pattern="^settings_menu$")], per_message=False)
     
