@@ -1,4 +1,4 @@
-# run_bot.py (Версія 2.9 - фінальне форматування)
+# run_bot.py (Версія 2.9.1 - Фікс форматування)
 
 import os
 import logging
@@ -16,7 +16,7 @@ import ccxt
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-BOT_VERSION = "v2.9"
+BOT_VERSION = "v2.9.1"
 
 # --- КОНФІГУРАЦІЯ ---
 AVAILABLE_EXCHANGES = {'Binance': 'binanceusdm', 'ByBit': 'bybit', 'MEXC': 'mexc', 'OKX': 'okx', 'Bitget': 'bitget', 'KuCoin': 'kucoinfutures', 'Gate.io': 'gate', 'Huobi': 'huobi', 'BingX': 'bingx'}
@@ -35,7 +35,6 @@ HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
 # --- СЕРВІСНІ ФУНКЦІЇ ---
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     all_rates = []
-    # ... (код цієї функції не змінюється)
     for name in enabled_exchanges:
         exchange_id = AVAILABLE_EXCHANGES.get(name)
         if not exchange_id: continue
@@ -101,6 +100,7 @@ def get_trade_link(exchange: str, symbol: str) -> str:
     template = EXCHANGE_URL_TEMPLATES.get(exchange)
     if not template: return ""
     return template.format(symbol=f"{symbol}USDT", symbol_base=symbol, symbol_hyphen=f"{symbol}-USDT")
+
 def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -> str:
     if df.empty: return "Не знайдено даних по фандінгу."
     df = df[~df['symbol'].isin(blacklist)]
@@ -109,40 +109,46 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     filtered_df = best_offers[best_offers['abs_rate'] >= threshold].copy()
     filtered_df.sort_values('abs_rate', ascending=False, inplace=True)
     filtered_df = filtered_df.head(TOP_N)
+    
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
     header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
+    
     lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        # ВИПРАВЛЕНО: Обрізаємо довгі тикери
         symbol = row['symbol']
-        display_symbol = (symbol[:6] + '..') if len(symbol) > 7 else symbol
+        display_symbol = (symbol[:7] + '..') if len(symbol) > 8 else symbol
         
-        # ВИПРАВЛЕНО: Форматування з відступами
-        symbol_str = f"<code>{display_symbol:<9}</code>" # 9 символів для тикера
-        rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
+        # ВИПРАВЛЕНО: Правильне форматування з одним тегом <code>
+        symbol_part = f"{display_symbol:<9}" # 9 символів для тикера
+        rate_part = f" {row['rate']: >-8.4f}% " # 8 символів для ставки
+        
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        lines.append(f"{emoji} {symbol_str} | {rate_str} | {exchange_str}")
+        
+        # Копіюємо тикер при натисканні на нього
+        lines.append(f"{emoji} <code>{symbol_part}</code>|<code>{rate_part}</code>| {exchange_str}")
     
     footer = f"\n\n<i>{BOT_VERSION}</i>"
     return f"{header}\n\n" + "\n".join(lines) + footer
+
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
-    df.sort_values('rate', ascending=False, inplace=True)
+    df.sort_values(by='rate', ascending=False, inplace=True)
+    
     lines = []
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
+        rate_part = f"{row['rate']: >-8.4f}%"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        # ВИПРАВЛЕНО: Форматування з відступами
-        lines.append(f"{emoji} {rate_str}  |  {exchange_str}")
+        
+        lines.append(f"{emoji} <code> {rate_part} </code> | {exchange_str}")
+        
     return f"{header}\n\n" + "\n".join(lines) + "\n\n"
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
-# ... (всі обробники залишаються без змін)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
     await update.message.reply_text("👋 Вітаю! Оберіть режим роботи:", reply_markup=get_start_menu_keyboard())
