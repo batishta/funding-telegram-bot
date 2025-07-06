@@ -1,4 +1,4 @@
-# run_bot.py (Версія 2.7 - фікс сортування тикера)
+# run_bot.py (Версія 2.8 - Фінальне форматування)
 
 import os
 import logging
@@ -16,7 +16,7 @@ import ccxt
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-BOT_VERSION = "v2.7"
+BOT_VERSION = "v2.8"
 
 # --- КОНФІГУРАЦІЯ ---
 AVAILABLE_EXCHANGES = {'Binance': 'binanceusdm', 'ByBit': 'bybit', 'MEXC': 'mexc', 'OKX': 'okx', 'Bitget': 'bitget', 'KuCoin': 'kucoinfutures', 'Gate.io': 'gate', 'Huobi': 'huobi', 'BingX': 'bingx'}
@@ -27,7 +27,7 @@ EXCHANGE_URL_TEMPLATES = {
     'Gate.io': 'https://www.gate.io/futures_trade/USDT/{symbol_base}_USDT', 'Huobi': 'https://futures.huobi.com/en-us/linear_swap/exchange/swap_trade/?contract_code={symbol}-USDT',
     'BingX': 'https://swap.bingx.com/en-us/{symbol}-USDT'
 }
-DEFAULT_SETTINGS = {"threshold": 0.3, "exchanges": ['Binance', 'ByBit', 'OKX', 'Bitget', 'KuCoin', 'MEXC', 'Gate.io'], "blacklist": []}
+DEFAULT_SETTINGS = {"threshold": 0.2, "exchanges": ['Binance', 'ByBit', 'OKX', 'Bitget', 'KuCoin', 'MEXC', 'Gate.io'], "blacklist": []}
 TOP_N = 10
 (SET_THRESHOLD_STATE, ADD_TO_BLACKLIST_STATE, REMOVE_FROM_BLACKLIST_STATE) = range(3)
 HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
@@ -100,6 +100,7 @@ def get_trade_link(exchange: str, symbol: str) -> str:
     template = EXCHANGE_URL_TEMPLATES.get(exchange)
     if not template: return ""
     return template.format(symbol=f"{symbol}USDT", symbol_base=symbol, symbol_hyphen=f"{symbol}-USDT")
+
 def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -> str:
     if df.empty: return "Не знайдено даних по фандінгу."
     df = df[~df['symbol'].isin(blacklist)]
@@ -111,13 +112,20 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
     header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
+    
     lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        symbol_str = f"<code>{row['symbol']:<9}</code>"
+        # ВИПРАВЛЕНО: Обрізаємо довгі тикери
+        symbol = row['symbol']
+        display_symbol = (symbol[:6] + '..') if len(symbol) > 7 else symbol
+        
+        symbol_str = f"<code>{display_symbol:<9}</code>"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
+        
+        # Використовуємо невидимі символи для вирівнювання, щоб посилання працювали
         lines.append(f"{emoji} {symbol_str} | {rate_str} | {exchange_str}")
     
     footer = f"\n\n<i>{BOT_VERSION}</i>"
@@ -126,8 +134,7 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
-    # ВИПРАВЛЕНО: Правильне сортування (за спаданням)
-    df.sort_values(by='rate', ascending=False, inplace=True)
+    df.sort_values('rate', ascending=False, inplace=True)
     lines = []
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
@@ -138,7 +145,6 @@ def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     return f"{header}\n\n" + "\n".join(lines) + "\n\n"
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
-# ... (всі обробники залишаються без змін, ви можете взяти їх з попередньої версії)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
     await update.message.reply_text("👋 Вітаю! Оберіть режим роботи:", reply_markup=get_start_menu_keyboard())
@@ -196,15 +202,13 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text("Некоректне значення. Спробуйте ще раз (наприклад: 0.5).")
         return SET_THRESHOLD_STATE
     return ConversationHandler.END
-async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, ticker: str = None):
-    if not ticker:
-        if not update.message or not update.message.text: return
-        try: float(update.message.text.strip().replace(',', '.')); return
-        except ValueError: pass
-        ticker = update.message.text.strip().upper()
-    chat_id = update.effective_chat.id
-    settings = get_user_settings(chat_id)
-    message = await context.bot.send_message(chat_id, f"Шукаю <b>{html.escape(ticker)}</b>...", parse_mode=ParseMode.HTML)
+async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    try: float(update.message.text.strip().replace(',', '.')); return
+    except ValueError: pass
+    ticker = update.message.text.strip().upper()
+    settings = get_user_settings(update.effective_chat.id)
+    message = await update.message.reply_text(f"Шукаю <b>{html.escape(ticker)}</b>...", parse_mode=ParseMode.HTML)
     df = get_all_funding_data_sequential(settings['exchanges'])
     df_ticker = df[df['symbol'] == ticker]
     message_text = format_ticker_info(df_ticker, ticker)
@@ -212,7 +216,12 @@ async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_T
 async def refresh_ticker_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; ticker = query.data.split('_')[-1]
     await query.answer(f"Оновлюю {ticker}...")
-    await ticker_message_handler(query, context, ticker=ticker)
+    settings = get_user_settings(query.message.chat.id)
+    df = get_all_funding_data_sequential(settings['exchanges'])
+    df_ticker = df[df['symbol'] == ticker]
+    message_text = format_ticker_info(df_ticker, ticker)
+    try: await query.edit_message_text(text=message_text, parse_mode=ParseMode.HTML, reply_markup=get_ticker_menu_keyboard(ticker), disable_web_page_preview=True)
+    except Exception as e: logger.error(f"ПОМИЛКА в refresh_ticker_callback: {e}", exc_info=True)
 async def exchange_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
