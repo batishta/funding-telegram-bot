@@ -1,4 +1,4 @@
-# run_bot.py (Версія 2.5)
+# run_bot.py (Версія 2.6)
 
 import os
 import logging
@@ -16,7 +16,7 @@ import ccxt
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-BOT_VERSION = "v2.5"
+BOT_VERSION = "v2.6"
 
 # --- КОНФІГУРАЦІЯ ---
 AVAILABLE_EXCHANGES = {'Binance': 'binanceusdm', 'ByBit': 'bybit', 'MEXC': 'mexc', 'OKX': 'okx', 'Bitget': 'bitget', 'KuCoin': 'kucoinfutures', 'Gate.io': 'gate', 'Huobi': 'huobi', 'BingX': 'bingx'}
@@ -101,7 +101,6 @@ def get_trade_link(exchange: str, symbol: str) -> str:
     template = EXCHANGE_URL_TEMPLATES.get(exchange)
     if not template: return ""
     return template.format(symbol=f"{symbol}USDT", symbol_base=symbol, symbol_hyphen=f"{symbol}-USDT")
-
 def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -> str:
     if df.empty: return "Не знайдено даних по фандінгу."
     df = df[~df['symbol'].isin(blacklist)]
@@ -110,29 +109,23 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     filtered_df = best_offers[best_offers['abs_rate'] >= threshold].copy()
     filtered_df.sort_values('abs_rate', ascending=False, inplace=True)
     filtered_df = filtered_df.head(TOP_N)
-    
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
     header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
-    
-    # ВИПРАВЛЕНО: Форматування з `<code>` для вирівнювання
     lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        # Створюємо клікабельне посилання, яке імітує відправку повідомлення боту
         symbol_str = f"<code>{row['symbol']:<9}</code>"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
         lines.append(f"{emoji} {symbol_str} | {rate_str} | {exchange_str}")
-    
-    # ВИПРАВЛЕНО: Відступ та версія бота
-    footer = f"\n\n\n<i>{BOT_VERSION}</i>"
+    # ВИПРАВЛЕНО: Зменшено відступ
+    footer = f"\n\n<i>{BOT_VERSION}</i>"
     return f"{header}\n\n" + "\n".join(lines) + footer
-
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
-    # ВИПРАВЛЕНО: Сортування від більшого до меншого
+    # ВИПРАВЛЕНО: Сортування
     df.sort_values('rate', ascending=False, inplace=True)
     lines = []
     for _, row in df.iterrows():
@@ -178,7 +171,6 @@ async def set_threshold_callback(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data['settings_message_id'] = query.message.message_id
     return SET_THRESHOLD_STATE
 async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (код без змін)
     if not update.message or not update.message.text: return ConversationHandler.END
     chat_id = update.effective_chat.id
     user_input = update.message.text.strip().replace(',', '.')
@@ -203,7 +195,6 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
         return SET_THRESHOLD_STATE
     return ConversationHandler.END
 async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ВИПРАВЛЕНО: Відновлено робочу логіку
     if not update.message or not update.message.text: return
     try: float(update.message.text.strip().replace(',', '.')); return
     except ValueError: pass
@@ -242,11 +233,11 @@ async def blacklist_menu_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 async def add_to_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.message.reply_text("Надішліть назви монет для додавання в чорний список (через пробіл або кому).")
+    sent_message = await query.message.reply_text("Надішліть назви монет для додавання в чорний список.")
+    context.user_data['prompt_message_id'] = sent_message.message_id
     context.user_data['settings_message_id'] = query.message.message_id
     return ADD_TO_BLACKLIST_STATE
 async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ВИПРАВЛЕНО: Логіка видалення повідомлень
     if not update.message or not update.message.text: return ConversationHandler.END
     chat_id = update.effective_chat.id; settings = get_user_settings(chat_id)
     blacklist = settings.get('blacklist', [])
@@ -254,8 +245,13 @@ async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DE
     added_count = len(new_tickers - set(blacklist))
     blacklist.extend(list(new_tickers - set(blacklist)))
     update_user_setting(chat_id, 'blacklist', blacklist)
-    if 'settings_message_id' in context.user_data:
-        try: await context.bot.delete_message(chat_id, context.user_data.pop('settings_message_id'))
+    prompt_message_id = context.user_data.pop('prompt_message_id', None)
+    if prompt_message_id:
+        try: await context.bot.delete_message(chat_id, prompt_message_id)
+        except: pass
+    settings_message_id = context.user_data.pop('settings_message_id', None)
+    if settings_message_id:
+        try: await context.bot.delete_message(chat_id, settings_message_id)
         except: pass
     await update.message.delete()
     success_msg = await context.bot.send_message(chat_id, f"✅ Додано {added_count} монет у чорний список.")
@@ -265,11 +261,11 @@ async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DE
     return ConversationHandler.END
 async def remove_from_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.message.reply_text("Надішліть назви монет для видалення з чорного списку.")
+    sent_message = await query.message.reply_text("Надішліть назви монет для видалення з чорного списку.")
+    context.user_data['prompt_message_id'] = sent_message.message_id
     context.user_data['settings_message_id'] = query.message.message_id
     return REMOVE_FROM_BLACKLIST_STATE
 async def remove_from_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ВИПРАВЛЕНО: Логіка видалення повідомлень
     if not update.message or not update.message.text: return ConversationHandler.END
     chat_id = update.effective_chat.id; settings = get_user_settings(chat_id)
     blacklist = settings.get('blacklist', [])
@@ -277,8 +273,13 @@ async def remove_from_blacklist_conversation(update: Update, context: ContextTyp
     removed_count = len(set(blacklist) & tickers_to_remove)
     blacklist = [t for t in blacklist if t not in tickers_to_remove]
     update_user_setting(chat_id, 'blacklist', blacklist)
-    if 'settings_message_id' in context.user_data:
-        try: await context.bot.delete_message(chat_id, context.user_data.pop('settings_message_id'))
+    prompt_message_id = context.user_data.pop('prompt_message_id', None)
+    if prompt_message_id:
+        try: await context.bot.delete_message(chat_id, prompt_message_id)
+        except: pass
+    settings_message_id = context.user_data.pop('settings_message_id', None)
+    if settings_message_id:
+        try: await context.bot.delete_message(chat_id, settings_message_id)
         except: pass
     await update.message.delete()
     success_msg = await context.bot.send_message(chat_id, f"✅ Видалено {removed_count} монет з чорного списку.")
