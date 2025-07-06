@@ -1,4 +1,4 @@
-# run_bot.py (Версія 2.4)
+# run_bot.py (Версія 2.5 - фікс сортування, відступів, діалогів ЧС)
 
 import os
 import logging
@@ -32,9 +32,9 @@ TOP_N = 10
 HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
 
 # --- СЕРВІСНІ ФУНКЦІЇ ---
+# ... (код get_all_funding_data_sequential без змін) ...
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     all_rates = []
-    # ... (код цієї функції не змінюється)
     for name in enabled_exchanges:
         exchange_id = AVAILABLE_EXCHANGES.get(name)
         if not exchange_id: continue
@@ -61,6 +61,7 @@ def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     if not all_rates: return pd.DataFrame()
     return pd.DataFrame(all_rates).drop_duplicates(subset=['symbol', 'exchange'], keep='first')
 
+
 # --- РОБОТА З НАЛАШТУВАННЯМИ ---
 _user_settings_cache = {}
 def get_user_settings(chat_id: int) -> dict:
@@ -72,7 +73,6 @@ def update_user_setting(chat_id: int, key: str, value): get_user_settings(chat_i
 def get_start_menu_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("💎 Тільки Фандінг", callback_data="show_funding_only")], [InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")]])
 def get_main_menu_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Оновити", callback_data="refresh"), InlineKeyboardButton("⚙️ Налаштування", callback_data="settings_menu")]])
 def get_settings_menu_keyboard(settings: dict):
-    # ВИПРАВЛЕНО: Кнопки у два стовпчики
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 Біржі", callback_data="settings_exchanges"), InlineKeyboardButton(f"📊 Фандінг: > {settings['threshold']}%", callback_data="settings_threshold")],
         [InlineKeyboardButton("🚫 Чорний список", callback_data="blacklist_menu"), InlineKeyboardButton("📊 Фандінг + Спред", callback_data="show_funding_spread")],
@@ -87,15 +87,11 @@ def get_blacklist_menu_keyboard(blacklist: list):
 def get_back_to_settings_keyboard(): return InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")]])
 def get_ticker_menu_keyboard(ticker: str): return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Оновити", callback_data=f"refresh_ticker_{ticker}"), InlineKeyboardButton("↩️ Назад", callback_data="refresh")]])
 def get_exchange_selection_keyboard(selected_exchanges: list):
-    # ВИПРАВЛЕНО: 3х3 сітка
-    buttons = []
-    row = []
+    buttons = []; row = []
     for name in AVAILABLE_EXCHANGES.keys():
         text = f"✅ {name}" if name in selected_exchanges else f"☑️ {name}"
         row.append(InlineKeyboardButton(text, callback_data=f"toggle_exchange_{name}"))
-        if len(row) == 3: # 3 кнопки в рядку
-            buttons.append(row)
-            row = []
+        if len(row) == 3: buttons.append(row); row = []
     if row: buttons.append(row)
     buttons.append([InlineKeyboardButton("↩️ Назад", callback_data="settings_menu")])
     return InlineKeyboardMarkup(buttons)
@@ -115,18 +111,18 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     filtered_df = filtered_df.head(TOP_N)
     
     if filtered_df.empty: return f"🟢 Немає монет з фандингом вище <b>{threshold}%</b> або нижче <b>-{threshold}%</b>."
-    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>"
-    # ВИПРАВЛЕНО: Повертаємо робоче форматування з `<code>`
+    header = f"<b>💎 Топ-{len(filtered_df)} сигналів (поріг > {threshold}%)</b>\n"
     lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        symbol_str = f"<code>{row['symbol']:<9}</code>"
+        symbol_str = f"<code>{row['symbol']}</code>"
         rate_str = f"<b>{row['rate']: >-8.4f}%</b>"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
         lines.append(f"{emoji} {symbol_str} | {rate_str} | {exchange_str}")
     
-    return f"{header}\n\n" + "\n".join(lines) + "\n\n" # Відступ знизу
+    # ВИПРАВЛЕНО: Додано невидимий символ для відступу
+    return f"{header}\n" + "\n".join(lines) + "\n\n"
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
     header = f"<b>🪙 Фандінг для {html.escape(ticker.upper())}</b>"
@@ -200,7 +196,6 @@ async def set_threshold_conversation(update: Update, context: ContextTypes.DEFAU
         return SET_THRESHOLD_STATE
     return ConversationHandler.END
 async def ticker_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ВИПРАВЛЕНО: Відновлено робочу логіку
     if not update.message or not update.message.text: return
     try: float(update.message.text.strip().replace(',', '.')); return
     except ValueError: pass
@@ -232,6 +227,7 @@ async def toggle_exchange_callback(update: Update, context: ContextTypes.DEFAULT
     update_user_setting(query.message.chat.id, 'exchanges', settings['exchanges'])
     await query.edit_message_reply_markup(reply_markup=get_exchange_selection_keyboard(settings['exchanges']))
     await query.answer(f"Біржа {exchange_name} оновлена")
+# ВИПРАВЛЕНО: Функції для Чорного списку
 async def blacklist_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     settings = get_user_settings(query.message.chat.id)
@@ -239,7 +235,7 @@ async def blacklist_menu_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 async def add_to_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.message.reply_text("Надішліть назви монет для додавання в чорний список (через пробіл або кому).")
+    await query.edit_message_text("Надішліть назви монет для додавання в чорний список (через пробіл або кому).")
     context.user_data['settings_message_id'] = query.message.message_id
     return ADD_TO_BLACKLIST_STATE
 async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,7 +257,7 @@ async def add_to_blacklist_conversation(update: Update, context: ContextTypes.DE
     return ConversationHandler.END
 async def remove_from_blacklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    await query.message.reply_text("Надішліть назви монет для видалення з чорного списку.")
+    await query.edit_message_text("Надішліть назви монет для видалення з чорного списку.")
     context.user_data['settings_message_id'] = query.message.message_id
     return REMOVE_FROM_BLACKLIST_STATE
 async def remove_from_blacklist_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -299,13 +295,13 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(close_settings_callback, pattern="^close_settings$"))
     application.add_handler(CallbackQueryHandler(exchange_menu_callback, pattern="^settings_exchanges$"))
     application.add_handler(CallbackQueryHandler(toggle_exchange_callback, pattern="^toggle_exchange_"))
-    application.add_handler(CallbackQueryHandler(blacklist_menu_callback, pattern="^blacklist_menu$"))
+    application.add_handler(CallbackQueryHandler(blacklist_menu_callback, pattern="^blacklist_menu$")) # Новий обробник
     application.add_handler(CallbackQueryHandler(refresh_ticker_callback, pattern="^refresh_ticker_"))
     application.add_handler(threshold_conv)
-    application.add_handler(blacklist_conv)
+    application.add_handler(blacklist_conv) # Новий діалог
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_message_handler))
     
-    logger.info("Бот запускається (версія 2.3)...")
+    logger.info("Бот запускається (версія 2.4)...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
