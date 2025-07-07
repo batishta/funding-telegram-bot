@@ -1,5 +1,4 @@
-
-# run_bot.py (Версія 3.0 - Фінальний редизайн)
+# run_bot.py (Версія 2.9.3)
 
 import os
 import logging
@@ -17,9 +16,10 @@ import ccxt
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-BOT_VERSION = "v3.0"
+BOT_VERSION = "v2.9.3"
 
 # --- КОНФІГУРАЦІЯ ---
+# ... (без змін)
 AVAILABLE_EXCHANGES = {'Binance': 'binanceusdm', 'ByBit': 'bybit', 'MEXC': 'mexc', 'OKX': 'okx', 'Bitget': 'bitget', 'KuCoin': 'kucoinfutures', 'Gate.io': 'gate', 'Huobi': 'huobi', 'BingX': 'bingx'}
 EXCHANGE_URL_TEMPLATES = {
     'Binance': 'https://www.binance.com/en/futures/{symbol}', 'ByBit': 'https://www.bybit.com/trade/usdt/{symbol}',
@@ -36,6 +36,7 @@ HELP_URL = "https://www.google.com/search?q=aistudio+google+com"
 # --- СЕРВІСНІ ФУНКЦІЇ ---
 def get_all_funding_data_sequential(enabled_exchanges: list) -> pd.DataFrame:
     all_rates = []
+    # ... (код цієї функції не змінюється)
     for name in enabled_exchanges:
         exchange_id = AVAILABLE_EXCHANGES.get(name)
         if not exchange_id: continue
@@ -115,27 +116,36 @@ def format_funding_update(df: pd.DataFrame, threshold: float, blacklist: list) -
     lines = []
     for _, row in filtered_df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
-        symbol_part = f"<code> {row['symbol']:<11} </code>"
-        rate_part = f"<code> {row['rate']: >-9.4f}% </code>"
+        symbol = row['symbol']
+        display_symbol = (symbol[:7] + '..') if len(symbol) > 8 else symbol
+        
+        # ВИПРАВЛЕНО: Форматування з відступами
+        symbol_part = f"<code>{display_symbol:<9}</code>"
+        rate_part = f"<b> {row['rate']: >-8.4f}% </b>"
         link = get_trade_link(row['exchange'], row['symbol'])
         exchange_str = f'<a href="{link}">{row["exchange"]}</a>'
-        lines.append(f"{emoji}{symbol_part}|{rate_part}| {exchange_str}")
+        
+        lines.append(f"{emoji} {symbol_part} | {rate_part} | {exchange_str}")
     
     footer = f"\n\n<i>{BOT_VERSION}</i>"
     return f"{header}\n\n" + "\n".join(lines) + footer
 
 def format_ticker_info(df: pd.DataFrame, ticker: str) -> str:
     if df.empty: return f"Не знайдено даних для <b>{html.escape(ticker)}</b>."
-    header = f"🪙 <code>{html.escape(ticker.upper())}</code>"
+    # ВИПРАВЛЕНО: Заголовок та іконка
+    header = f"🪙 <b>Фандінг для <pre>{html.escape(ticker.upper())}</pre></b>"
     df.sort_values(by='rate', ascending=False, inplace=True)
+    
     lines = []
     for _, row in df.iterrows():
         emoji = "🟢" if row['rate'] < 0 else "🔴"
         link = get_trade_link(row['exchange'], row['symbol'])
         direction_str = f"<a href='{link}'>{'LONG' if row['rate'] < 0 else 'SHORT'}</a>"
-        rate_part = f"<code> {row['rate']: >-9.4f}% </code>"
+        rate_part = f"<b> {row['rate']: >-8.4f}% </b>"
+        # ВИПРАВЛЕНО: Прибираємо посилання з назви біржі тут
         exchange_str = f"{row['exchange']}"
-        lines.append(f"{emoji}  {direction_str} |{rate_part}| {exchange_str}")
+        lines.append(f"{emoji}  {direction_str}  | {rate_part} |  {exchange_str}")
+        
     return f"{header}\n\n" + "\n".join(lines) + "\n\n"
 
 # --- ОБРОБНИКИ ТЕЛЕГРАМ ---
@@ -143,7 +153,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
     # Уникаємо дублювання кнопок
     if 'start_message_id' in context.user_data:
-        try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data['start_message_id'])
+        try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=context.user_data.pop('start_message_id'))
         except: pass
     message = await update.message.reply_text("👋 Вітаю! Оберіть режим роботи:", reply_markup=get_start_menu_keyboard())
     context.user_data['start_message_id'] = message.message_id
@@ -151,6 +161,9 @@ async def show_funding_report(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query; await query.answer()
     chat_id = query.message.chat.id
     settings = get_user_settings(chat_id)
+    if 'start_message_id' in context.user_data:
+        try: await context.bot.delete_message(chat_id=chat_id, message_id=context.user_data.pop('start_message_id'))
+        except: pass
     await query.edit_message_text("Починаю пошук фандінгу...")
     try:
         df = get_all_funding_data_sequential(settings['exchanges'])
